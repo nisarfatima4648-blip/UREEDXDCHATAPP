@@ -1,0 +1,1187 @@
+     1→import { createServer, type IncomingMessage, type ServerResponse } from 'http'
+     2→import { Server, Socket } from 'socket.io'
+     3→import { db, type User } from '../../src/lib/database'
+     4→
+     5→// ─── Server Setup ────────────────────────────────────────────────────────────
+     6→
+     7→const httpServer = createServer()
+     8→const io = new Server(httpServer, {
+     9→  path: '/',
+    10→  cors: {
+    11→    origin: '*',
+    12→    methods: ['GET', 'POST'],
+    13→  },
+    14→  pingTimeout: 60000,
+    15→  pingInterval: 25000,
+    16→})
+    17→
+    18→// ─── Connection Tracking ─────────────────────────────────────────────────────
+    19→
+    20→const socketToUser = new Map<string, string>() // socket.id -> userId
+    21→const userToSocket = new Map<string, string>() // userId -> socket.id
+    22→
+    23→const PORT = 3003
+    24→
+    25→// ─── Helpers ─────────────────────────────────────────────────────────────────
+    26→
+    27→function now(): string {
+    28→  return new Date().toISOString()
+    29→}
+    30→
+    31→function generateId(): string {
+    32→  return crypto.randomUUID()
+    33→}
+    34→
+    35→function getUserId(socket: Socket): string | undefined {
+    36→  return socketToUser.get(socket.id)
+    37→}
+    38→
+    39→function getSocketByUser(userId: string): Socket | undefined {
+    40→  const socketId = userToSocket.get(userId)
+    41→  if (!socketId) return undefined
+    42→  return io.sockets.sockets.get(socketId)
+    43→}
+    44→
+    45→function emitToUser(userId: string, event: string, data: any) {
+    46→  const socket = getSocketByUser(userId)
+    47→  if (socket) {
+    48→    socket.emit(event, { ...data, timestamp: now() })
+    49→  }
+    50→}
+    51→
+    52→/** Convert DB User (snake_case) to camelCase for socket payloads */
+    53→function sanitizeUser(user: User) {
+    54→  return {
+    55→    id: user.id,
+    56→    username: user.username,
+    57→    displayName: user.display_name,
+    58→    avatarUrl: user.avatar_url,
+    59→    status: user.status,
+    60→  }
+    61→}
+    62→
+    63→// ─── Main Connection Handler ─────────────────────────────────────────────────
+    64→
+    65→io.on('connection', (socket) => {
+    66→  console.log(`[socket] Connected: ${socket.id}`)
+    67→
+    68→  // ═══════════════════════════════════════════════════════════════════════════
+    69→  // AUTH
+    70→  // ═══════════════════════════════════════════════════════════════════════════
+    71→
+    72→  socket.on('auth', (payload: { userId: string }) => {
+    73→    try {
+    74→      const { userId } = payload
+    75→      const user = db.getUserById(userId)
+    76→
+    77→      if (!user) {
+    78→        socket.emit('auth:error', { message: 'User not found', timestamp: now() })
+    79→        socket.disconnect()
+    80→        return
+    81→      }
+    82→
+    83→      // Store mapping
+    84→      socketToUser.set(socket.id, userId)
+    85→      userToSocket.set(userId, socket.id)
+    86→
+    87→      // Update status to online
+    88→      db.updateUserStatus(userId, 'online')
+    89→
+    90→      // Join all GC rooms the user is a member of
+    91→      const gcList = db.getUserGCs(userId)
+    92→      for (const gc of gcList) {
+    93→        socket.join(`gc:${gc.id}`)
+    94→      }
+    95→
+    96→      // Join personal room for DMs and friend events
+    97→      socket.join(`user:${userId}`)
+    98→
+    99→      // Also join any existing DM conversation rooms
+   100→      const dmConversations = db.getUserDMs(userId)
+   101→      for (const dm of dmConversations) {
+   102→        socket.join(`dm:${dm.id}`)
+   103→      }
+   104→
+   105→      // Send success with user data
+   106→      socket.emit('auth:success', { user: sanitizeUser(user), timestamp: now() })
+   107→
+   108→      // Broadcast presence to all GC rooms
+   109→      const presence = { userId, status: 'online' as const, ...sanitizeUser(user), timestamp: now() }
+   110→      for (const gc of gcList) {
+   111→        socket.to(`gc:${gc.id}`).emit('presence:update', presence)
+   112→      }
+   113→
+   114→      // Broadcast to friends
+   115→      const friends = db.getFriends(userId)
+   116→      for (const f of friends) {
+   117→        emitToUser(f.id, 'presence:update', presence)
+   118→      }
+   119→
+   120→      console.log(`[auth] User ${user.username} (${userId}) authenticated, joined ${gcList.length} GCs`)
+   121→    } catch (err) {
+   122→      console.error('[auth] Error:', err)
+   123→      socket.emit('auth:error', { message: 'Authentication failed', timestamp: now() })
+   124→    }
+   125→  })
+   126→
+   127→  // ═══════════════════════════════════════════════════════════════════════════
+   128→  // MESSAGING
+   129→  // ═══════════════════════════════════════════════════════════════════════════
+   130→
+   131→  socket.on('message:send', (payload: {
+   132→    gcId?: string
+   133→    dmConversationId?: string
+   134→    content: string
+   135→    type?: string
+   136→    attachmentUrl?: string
+   137→    replyToId?: string
+   138→  }) => {
+   139→    try {
+   140→      const userId = getUserId(socket)
+   141→      if (!userId) {
+   142→        socket.emit('error', { message: 'Not authenticated', timestamp: now() })
+   143→        return
+   144→      }
+   145→
+   146→      const user = db.getUserById(userId)
+   147→      if (!user) return
+   148→
+   149→      const { gcId, dmConversationId, content, type, attachmentUrl, replyToId } = payload
+   150→
+   151→      // Validate access — must be member of GC or participant in DM
+   152→      if (gcId) {
+   153→        if (!db.isMember(gcId, userId)) {
+   154→          socket.emit('error', { message: 'Not a member of this group chat', timestamp: now() })
+   155→          return
+   156→        }
+   157→      } else if (dmConversationId) {
+   158→        const dm = db.getDMConversation(userId, 'dummy') // We need a different check
+   159→        // Check if user is in this DM by querying the conversation
+   160→        const dmConv = db.raw
+   161→          .query('SELECT 1 FROM dm_conversations WHERE id = ? AND (user1_id = ? OR user2_id = ?)')
+   162→          .get(dmConversationId, userId, userId) as unknown
+   163→        if (!dmConv) {
+   164→          socket.emit('error', { message: 'Not a participant in this DM', timestamp: now() })
+   165→          return
+   166→        }
+   167→        // Join the DM room
+   168→        socket.join(`dm:${dmConversationId}`)
+   169→      } else {
+   170→        socket.emit('error', { message: 'Must specify gcId or dmConversationId', timestamp: now() })
+   171→        return
+   172→      }
+   173→
+   174→      // Create message in DB
+   175→      const messageId = generateId()
+   176→      const message = db.createMessage(messageId, {
+   177→        gc_id: gcId ?? null,
+   178→        dm_conversation_id: dmConversationId ?? null,
+   179→        sender_id: userId,
+   180→        content,
+   181→        type: (type as any) ?? 'text',
+   182→        attachment_url: attachmentUrl ?? null,
+   183→        reply_to_id: replyToId ?? null,
+   184→      })
+   185→
+   186→      const fullMessage = {
+   187→        id: message.id,
+   188→        gcId: message.gc_id,
+   189→        dmConversationId: message.dm_conversation_id,
+   190→        content: message.content,
+   191→        type: message.type,
+   192→        attachmentUrl: message.attachment_url,
+   193→        replyToId: message.reply_to_id,
+   194→        createdAt: message.created_at,
+   195→        sender: {
+   196→          id: user.id,
+   197→          username: user.username,
+   198→          displayName: user.display_name,
+   199→          avatarUrl: user.avatar_url,
+   200→        },
+   201→        timestamp: now(),
+   202→      }
+   203→
+   204→      // Emit to appropriate room
+   205→      if (gcId) {
+   206→        io.to(`gc:${gcId}`).emit('message:new', fullMessage)
+   207→      } else if (dmConversationId) {
+   208→        // For DMs, also ensure the other participant receives the message
+   209→        // even if they weren't in the room (e.g. DM created after their auth)
+   210→        const dmConv = db.raw
+   211→          .query('SELECT user1_id, user2_id FROM dm_conversations WHERE id = ?')
+   212→          .get(dmConversationId) as any
+   213→        if (dmConv) {
+   214→          const otherUserId = dmConv.user1_id === userId ? dmConv.user2_id : dmConv.user1_id
+   215→          const otherSocket = getSocketByUser(otherUserId)
+   216→          if (otherSocket) {
+   217→            otherSocket.join(`dm:${dmConversationId}`)
+   218→          }
+   219→        }
+   220→        io.to(`dm:${dmConversationId}`).emit('message:new', fullMessage)
+   221→      }
+   222→    } catch (err) {
+   223→      console.error('[message:send] Error:', err)
+   224→      socket.emit('error', { message: 'Failed to send message', timestamp: now() })
+   225→    }
+   226→  })
+   227→
+   228→  // ── Typing Indicator ───────────────────────────────────────────────────────
+   229→
+   230→  socket.on('message:typing', (payload: {
+   231→    gcId?: string
+   232→    dmConversationId?: string
+   233→    isTyping: boolean
+   234→  }) => {
+   235→    try {
+   236→      const userId = getUserId(socket)
+   237→      if (!userId) return
+   238→
+   239→      const user = db.getUserById(userId)
+   240→      if (!user) return
+   241→
+   242→      const typingPayload = {
+   243→        userId,
+   244→        username: user.username,
+   245→        displayName: user.display_name,
+   246→        gcId: payload.gcId ?? null,
+   247→        dmConversationId: payload.dmConversationId ?? null,
+   248→        isTyping: payload.isTyping,
+   249→        timestamp: now(),
+   250→      }
+   251→
+   252→      if (payload.gcId) {
+   253→        socket.to(`gc:${payload.gcId}`).emit('message:typing', typingPayload)
+   254→      } else if (payload.dmConversationId) {
+   255→        socket.to(`dm:${payload.dmConversationId}`).emit('message:typing', typingPayload)
+   256→      }
+   257→    } catch (err) {
+   258→      console.error('[message:typing] Error:', err)
+   259→    }
+   260→  })
+   261→
+   262→  // ═══════════════════════════════════════════════════════════════════════════
+   263→  // PRESENCE
+   264→  // ═══════════════════════════════════════════════════════════════════════════
+   265→
+   266→  socket.on('presence:change', (payload: { status: 'online' | 'idle' | 'dnd' | 'invisible' }) => {
+   267→    try {
+   268→      const userId = getUserId(socket)
+   269→      if (!userId) return
+   270→
+   271→      const user = db.getUserById(userId)
+   272→      if (!user) return
+   273→
+   274→      const { status } = payload
+   275→      const gcList = db.getUserGCs(userId)
+   276→
+   277→      if (status === 'invisible') {
+   278→        // Internally keep online but show offline to others
+   279→        db.updateUserStatus(userId, 'offline')
+   280→
+   281→        const offlinePresence = {
+   282→          userId,
+   283→          status: 'offline' as const,
+   284→          ...sanitizeUser(user),
+   285→          timestamp: now(),
+   286→        }
+   287→
+   288→        for (const gc of gcList) {
+   289→          socket.to(`gc:${gc.id}`).emit('presence:update', offlinePresence)
+   290→        }
+   291→
+   292→        const friends = db.getFriends(userId)
+   293→        for (const f of friends) {
+   294→          emitToUser(f.id, 'presence:update', offlinePresence)
+   295→        }
+   296→      } else {
+   297→        db.updateUserStatus(userId, status)
+   298→
+   299→        const presence = {
+   300→          userId,
+   301→          status,
+   302→          ...sanitizeUser(user),
+   303→          timestamp: now(),
+   304→        }
+   305→
+   306→        for (const gc of gcList) {
+   307→          socket.to(`gc:${gc.id}`).emit('presence:update', presence)
+   308→        }
+   309→
+   310→        const friends = db.getFriends(userId)
+   311→        for (const f of friends) {
+   312→          emitToUser(f.id, 'presence:update', presence)
+   313→        }
+   314→      }
+   315→
+   316→      // Acknowledge to the user themselves
+   317→      socket.emit('presence:updated', { status, timestamp: now() })
+   318→    } catch (err) {
+   319→      console.error('[presence:change] Error:', err)
+   320→    }
+   321→  })
+   322→
+   323→  // ── User Profile Update (broadcast to all GC rooms the user is in) ───────
+   324→
+   325→  socket.on('user:profile:update', (payload: {
+   326→    userId: string
+   327→    displayName?: string
+   328→    bio?: string
+   329→    customStatus?: string
+   330→    avatarUrl?: string
+   331→    bannerUrl?: string
+   332→  }) => {
+   333→    try {
+   334→      const userId = getUserId(socket)
+   335→      if (!userId || userId !== payload.userId) return
+   336→
+   337→      // Update DB
+   338→      const updates: string[] = []
+   339→      const params: any[] = []
+   340→      if (payload.displayName !== undefined) { updates.push('display_name = ?'); params.push(payload.displayName) }
+   341→      if (payload.bio !== undefined) { updates.push('bio = ?'); params.push(payload.bio) }
+   342→      if (payload.customStatus !== undefined) { updates.push('custom_status = ?'); params.push(payload.customStatus) }
+   343→      if (payload.avatarUrl !== undefined) { updates.push('avatar_url = ?'); params.push(payload.avatarUrl) }
+   344→      if (payload.bannerUrl !== undefined) { updates.push('banner_url = ?'); params.push(payload.bannerUrl) }
+   345→      if (updates.length > 0) {
+   346→        updates.push("updated_at = datetime('now')")
+   347→        params.push(userId)
+   348→        db.raw.query(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`).run(...params)
+   349→      }
+   350→
+   351→      // Broadcast to all GC rooms
+   352→      const gcList = db.getUserGCs(userId)
+   353→      const broadcastData = { userId, ...payload, timestamp: now() }
+   354→      for (const gc of gcList) {
+   355→        socket.to(`gc:${gc.id}`).emit('user:profile:update', broadcastData)
+   356→      }
+   357→
+   358→      // Also emit to any DM conversations
+   359→      const dmConvs = db.getUserDMs(userId)
+   360→      for (const dm of dmConvs) {
+   361→        socket.to(`dm:${dm.id}`).emit('user:profile:update', broadcastData)
+   362→      }
+   363→    } catch (err) {
+   364→      console.error('[user:profile:update] Error:', err)
+   365→    }
+   366→  })
+   367→
+   368→  // ═══════════════════════════════════════════════════════════════════════════
+   369→  // VOICE CHANNEL
+   370→  // ═══════════════════════════════════════════════════════════════════════════
+   371→
+   372→  socket.on('vc:join', (payload: { gcId: string }) => {
+   373→    try {
+   374→      const userId = getUserId(socket)
+   375→      if (!userId) return
+   376→
+   377→      const user = db.getUserById(userId)
+   378→      if (!user) return
+   379→
+   380→      const { gcId } = payload
+   381→
+   382→      if (!db.isMember(gcId, userId)) {
+   383→        socket.emit('error', { message: 'Not a member of this group chat', timestamp: now() })
+   384→        return
+   385→      }
+   386→
+   387→      // Create voice session (db.joinVoice also removes any existing session for this user)
+   388→      db.joinVoice(gcId, userId)
+   389→
+   390→      // Join the VC room for signaling
+   391→      socket.join(`vc:${gcId}`)
+   392→
+   393→      // Notify others in the GC
+   394→      socket.to(`gc:${gcId}`).emit('vc:user-joined', {
+   395→        userId,
+   396→        username: user.username,
+   397→        displayName: user.display_name,
+   398→        avatarUrl: user.avatar_url,
+   399→        gcId,
+   400→        timestamp: now(),
+   401→      })
+   402→
+   403→      // Send current participants list to the joining user
+   404→      const participants = db.getVoiceParticipants(gcId)
+   405→      socket.emit('vc:participants', {
+   406→        gcId,
+   407→        participants: participants.map((p) => ({
+   408→          userId: p.user_id,
+   409→          username: p.user?.username,
+   410→          displayName: p.user?.display_name,
+   411→          avatarUrl: p.user?.avatar_url,
+   412→          joinedAt: p.joined_at,
+   413→        })),
+   414→        timestamp: now(),
+   415→      })
+   416→
+   417→      console.log(`[vc] ${user.username} joined VC in gc:${gcId}`)
+   418→    } catch (err) {
+   419→      console.error('[vc:join] Error:', err)
+   420→      socket.emit('error', { message: 'Failed to join voice channel', timestamp: now() })
+   421→    }
+   422→  })
+   423→
+   424→  socket.on('vc:leave', (payload: { gcId: string }) => {
+   425→    try {
+   426→      const userId = getUserId(socket)
+   427→      if (!userId) return
+   428→
+   429→      const user = db.getUserById(userId)
+   430→      if (!user) return
+   431→
+   432→      const { gcId } = payload
+   433→
+   434→      db.leaveVoice(gcId, userId)
+   435→      socket.leave(`vc:${gcId}`)
+   436→
+   437→      const leavePayload = {
+   438→        userId,
+   439→        username: user.username,
+   440→        displayName: user.display_name,
+   441→        gcId,
+   442→        timestamp: now(),
+   443→      }
+   444→
+   445→      // Notify everyone in the GC (including the leaving user so their UI updates)
+   446→      io.to(`gc:${gcId}`).emit('vc:user-left', leavePayload)
+   447→
+   448→      // Also notify the VC signaling room so peers can close WebRTC connections
+   449→      socket.to(`vc:${gcId}`).emit('vc:peer-left', {
+   450→        userId,
+   451→        gcId,
+   452→        timestamp: now(),
+   453→      })
+   454→
+   455→      console.log(`[vc] ${user.username} left VC in gc:${gcId}`)
+   456→    } catch (err) {
+   457→      console.error('[vc:leave] Error:', err)
+   458→    }
+   459→  })
+   460→
+   461→  // ─── WebRTC Signaling Relay ──────────────────────────────────────────────
+   462→
+   463→  socket.on('vc:signal', (payload: { gcId: string; targetUserId: string; signal: any }) => {
+   464→    try {
+   465→      const userId = getUserId(socket)
+   466→      if (!userId) return
+   467→
+   468→      const targetSocket = getSocketByUser(payload.targetUserId)
+   469→      if (targetSocket) {
+   470→        targetSocket.emit('vc:signal', {
+   471→          fromUserId: userId,
+   472→          gcId: payload.gcId,
+   473→          signal: payload.signal,
+   474→        })
+   475→      }
+   476→    } catch (err) {
+   477→      console.error('[vc:signal] Error:', err)
+   478→    }
+   479→  })
+   480→
+   481→  // ═══════════════════════════════════════════════════════════════════════════
+   482→  // GC MEMBER MANAGEMENT
+   483→  // ═══════════════════════════════════════════════════════════════════════════
+   484→
+   485→  socket.on('gc:member:add', (payload: { gcId: string; userId: string; role?: string }) => {
+   486→    try {
+   487→      const userId = getUserId(socket)
+   488→      if (!userId) return
+   489→
+   490→      const { gcId, userId: targetUserId, role } = payload
+   491→
+   492→      if (!db.isMember(gcId, userId)) {
+   493→        socket.emit('error', { message: 'Not a member of this group chat', timestamp: now() })
+   494→        return
+   495→      }
+   496→
+   497→      db.addMember(gcId, targetUserId, (role as any) ?? 'member')
+   498→
+   499→      const targetUser = db.getUserById(targetUserId)
+   500→
+   501→      // IMPORTANT: Join target user to GC room BEFORE emitting so they receive the event
+   502→      const targetSocket = getSocketByUser(targetUserId)
+   503→      if (targetSocket) {
+   504→        targetSocket.join(`gc:${gcId}`)
+   505→      }
+   506→
+   507→      // Fetch full GC data so the new member can add it to their sidebar
+   508→      const gc = db.getGCById(gcId)
+   509→
+   510→      const memberData = {
+   511→        gcId,
+   512→        userId: targetUserId,
+   513→        role: (role as any) ?? 'member',
+   514→        user: targetUser ? sanitizeUser(targetUser) : null,
+   515→        gc: gc ? {
+   516→          id: gc.id,
+   517→          name: gc.name,
+   518→          description: gc.description,
+   519→          owner_id: gc.owner_id,
+   520→          created_at: gc.created_at,
+   521→          updated_at: gc.updated_at,
+   522→          avatar_url: gc.avatar_url,
+   523→          banner_url: gc.banner_url,
+   524→        } : null,
+   525→        timestamp: now(),
+   526→      }
+   527→
+   528→      io.to(`gc:${gcId}`).emit('gc:member:added', memberData)
+   529→
+   530→      console.log(`[gc] User ${targetUserId} added to gc:${gcId}`)
+   531→    } catch (err) {
+   532→      console.error('[gc:member:add] Error:', err)
+   533→      socket.emit('error', { message: 'Failed to add member', timestamp: now() })
+   534→    }
+   535→  })
+   536→
+   537→  socket.on('gc:member:remove', (payload: { gcId: string; userId: string }) => {
+   538→    try {
+   539→      const userId = getUserId(socket)
+   540→      if (!userId) return
+   541→
+   542→      const { gcId, userId: targetUserId } = payload
+   543→
+   544→      if (!db.isMember(gcId, userId)) {
+   545→        socket.emit('error', { message: 'Not a member of this group chat', timestamp: now() })
+   546→        return
+   547→      }
+   548→
+   549→      db.removeMember(gcId, targetUserId)
+   550→
+   551→      // Remove from VC if in one
+   552→      db.leaveVoice(gcId, targetUserId)
+   553→
+   554→      const memberData = {
+   555→        gcId,
+   556→        userId: targetUserId,
+   557→        timestamp: now(),
+   558→      }
+   559→
+   560→      io.to(`gc:${gcId}`).emit('gc:member:removed', memberData)
+   561→
+   562→      // If target user is online, make them leave the rooms
+   563→      const targetSocket = getSocketByUser(targetUserId)
+   564→      if (targetSocket) {
+   565→        targetSocket.leave(`gc:${gcId}`)
+   566→        targetSocket.leave(`vc:${gcId}`)
+   567→      }
+   568→
+   569→      console.log(`[gc] User ${targetUserId} removed from gc:${gcId}`)
+   570→    } catch (err) {
+   571→      console.error('[gc:member:remove] Error:', err)
+   572→      socket.emit('error', { message: 'Failed to remove member', timestamp: now() })
+   573→    }
+   574→  })
+   575→
+   576→  socket.on('gc:member:ban', (payload: { gcId: string; userId: string; reason?: string }) => {
+   577→    try {
+   578→      const userId = getUserId(socket)
+   579→      if (!userId) return
+   580→
+   581→      const { gcId, userId: targetUserId, reason } = payload
+   582→
+   583→      if (!db.isMember(gcId, userId)) {
+   584→        socket.emit('error', { message: 'Not a member of this group chat', timestamp: now() })
+   585→        return
+   586→      }
+   587→
+   588→      db.banUser(gcId, targetUserId, reason)
+   589→
+   590→      // Remove from members and VC
+   591→      db.removeMember(gcId, targetUserId)
+   592→      db.leaveVoice(gcId, targetUserId)
+   593→
+   594→      const banData = {
+   595→        gcId,
+   596→        userId: targetUserId,
+   597→        reason: reason ?? null,
+   598→        timestamp: now(),
+   599→      }
+   600→
+   601→      io.to(`gc:${gcId}`).emit('gc:member:banned', banData)
+   602→
+   603→      // If target user is online, notify and remove from rooms
+   604→      const targetSocket = getSocketByUser(targetUserId)
+   605→      if (targetSocket) {
+   606→        targetSocket.leave(`gc:${gcId}`)
+   607→        targetSocket.leave(`vc:${gcId}`)
+   608→        targetSocket.emit('gc:banned', { gcId, reason: reason ?? null, timestamp: now() })
+   609→      }
+   610→
+   611→      console.log(`[gc] User ${targetUserId} banned from gc:${gcId}`)
+   612→    } catch (err) {
+   613→      console.error('[gc:member:ban] Error:', err)
+   614→      socket.emit('error', { message: 'Failed to ban member', timestamp: now() })
+   615→    }
+   616→  })
+   617→
+   618→  socket.on('gc:update', (payload: {
+   619→    gcId: string
+   620→    name?: string
+   621→    iconUrl?: string
+   622→    description?: string
+   623→  }) => {
+   624→    try {
+   625→      const userId = getUserId(socket)
+   626→      if (!userId) return
+   627→
+   628→      const { gcId, name, iconUrl, description } = payload
+   629→
+   630→      if (!db.isMember(gcId, userId)) {
+   631→        socket.emit('error', { message: 'Not a member of this group chat', timestamp: now() })
+   632→        return
+   633→      }
+   634→
+   635→      const updatedGC = db.updateGC(gcId, {
+   636→        name,
+   637→        icon_url: iconUrl,
+   638→        description,
+   639→      })
+   640→
+   641→      const gcData = {
+   642→        gcId,
+   643→        gc: {
+   644→          id: updatedGC.id,
+   645→          name: updatedGC.name,
+   646→          iconUrl: updatedGC.icon_url,
+   647→          description: updatedGC.description,
+   648→          ownerId: updatedGC.owner_id,
+   649→          updatedAt: updatedGC.updated_at,
+   650→          memberCount: updatedGC.member_count,
+   651→        },
+   652→        timestamp: now(),
+   653→      }
+   654→
+   655→      io.to(`gc:${gcId}`).emit('gc:updated', gcData)
+   656→
+   657→      console.log(`[gc] gc:${gcId} updated`)
+   658→    } catch (err) {
+   659→      console.error('[gc:update] Error:', err)
+   660→      socket.emit('error', { message: 'Failed to update group chat', timestamp: now() })
+   661→    }
+   662→  })
+   663→
+   664→  // ═══════════════════════════════════════════════════════════════════════════
+   665→  // FRIEND REQUESTS
+   666→  // ═══════════════════════════════════════════════════════════════════════════
+   667→
+   668→  socket.on('friend:request:send', (payload: { receiverId: string }) => {
+   669→    try {
+   670→      const userId = getUserId(socket)
+   671→      if (!userId) return
+   672→
+   673→      const user = db.getUserById(userId)
+   674→      if (!user) return
+   675→
+   676→      const { receiverId } = payload
+   677→      const request = db.sendFriendRequest(userId, receiverId)
+   678→
+   679→      const requestData = {
+   680→        id: request.id,
+   681→        senderId: userId,
+   682→        sender: sanitizeUser(user),
+   683→        receiverId,
+   684→        status: 'pending' as const,
+   685→        createdAt: request.created_at,
+   686→        timestamp: now(),
+   687→      }
+   688→
+   689→      // Emit to receiver's personal room
+   690→      emitToUser(receiverId, 'friend:request:received', requestData)
+   691→
+   692→      // Acknowledge to sender
+   693→      socket.emit('friend:request:sent', requestData)
+   694→
+   695→      console.log(`[friend] ${user.username} sent friend request to ${receiverId}`)
+   696→    } catch (err) {
+   697→      console.error('[friend:request:send] Error:', err)
+   698→      socket.emit('error', { message: 'Failed to send friend request', timestamp: now() })
+   699→    }
+   700→  })
+   701→
+   702→  socket.on('friend:request:accept', (payload: { requestId: string }) => {
+   703→    try {
+   704→      const userId = getUserId(socket)
+   705→      if (!userId) return
+   706→
+   707→      const { requestId } = payload
+   708→
+   709→      // Get the request details before updating
+   710→      const req = db.raw
+   711→        .query('SELECT * FROM friend_requests WHERE id = ?')
+   712→        .get(requestId) as Record<string, any> | undefined
+   713→
+   714→      if (!req) {
+   715→        socket.emit('error', { message: 'Friend request not found', timestamp: now() })
+   716→        return
+   717→      }
+   718→
+   719→      db.acceptFriendRequest(requestId)
+   720→
+   721→      const acceptData = {
+   722→        id: requestId,
+   723→        senderId: req.sender_id,
+   724→        receiverId: req.receiver_id,
+   725→        status: 'accepted' as const,
+   726→        timestamp: now(),
+   727→      }
+   728→
+   729→      // Emit to both users
+   730→      emitToUser(req.sender_id, 'friend:accepted', acceptData)
+   731→      emitToUser(req.receiver_id, 'friend:accepted', acceptData)
+   732→
+   733→      console.log(`[friend] Request ${requestId} accepted`)
+   734→    } catch (err) {
+   735→      console.error('[friend:request:accept] Error:', err)
+   736→      socket.emit('error', { message: 'Failed to accept friend request', timestamp: now() })
+   737→    }
+   738→  })
+   739→
+   740→  socket.on('friend:request:decline', (payload: { requestId: string }) => {
+   741→    try {
+   742→      const userId = getUserId(socket)
+   743→      if (!userId) return
+   744→
+   745→      const { requestId } = payload
+   746→
+   747→      // Get the request details before updating
+   748→      const req = db.raw
+   749→        .query('SELECT * FROM friend_requests WHERE id = ?')
+   750→        .get(requestId) as Record<string, any> | undefined
+   751→
+   752→      if (!req) {
+   753→        socket.emit('error', { message: 'Friend request not found', timestamp: now() })
+   754→        return
+   755→      }
+   756→
+   757→      db.declineFriendRequest(requestId)
+   758→
+   759→      const declineData = {
+   760→        id: requestId,
+   761→        senderId: req.sender_id,
+   762→        receiverId: req.receiver_id,
+   763→        status: 'declined' as const,
+   764→        timestamp: now(),
+   765→      }
+   766→
+   767→      // Emit to sender
+   768→      emitToUser(req.sender_id, 'friend:declined', declineData)
+   769→
+   770→      // Acknowledge to the decliner
+   771→      socket.emit('friend:request:declined', declineData)
+   772→
+   773→      console.log(`[friend] Request ${requestId} declined`)
+   774→    } catch (err) {
+   775→      console.error('[friend:request:decline] Error:', err)
+   776→      socket.emit('error', { message: 'Failed to decline friend request', timestamp: now() })
+   777→    }
+   778→  })
+   779→
+   780→  // ═══════════════════════════════════════════════════════════════════════════
+   781→  // CUSTOM EMOJIS
+   782→  // ═══════════════════════════════════════════════════════════════════════════
+   783→
+   784→  socket.on('emoji:add', (payload: { gcId: string; name: string; imageUrl: string }) => {
+   785→    try {
+   786→      const userId = getUserId(socket)
+   787→      if (!userId) return
+   788→
+   789→      const { gcId, name, imageUrl } = payload
+   790→
+   791→      if (!db.isMember(gcId, userId)) {
+   792→        socket.emit('error', { message: 'Not a member of this group chat', timestamp: now() })
+   793→        return
+   794→      }
+   795→
+   796→      const emoji = db.addEmoji(gcId, name, imageUrl, userId)
+   797→
+   798→      const emojiData = {
+   799→        id: emoji.id,
+   800→        gcId,
+   801→        name: emoji.name,
+   802→        imageUrl: emoji.image_url,
+   803→        uploadedBy: userId,
+   804→        createdAt: emoji.created_at,
+   805→        timestamp: now(),
+   806→      }
+   807→
+   808→      io.to(`gc:${gcId}`).emit('emoji:added', emojiData)
+   809→
+   810→      console.log(`[emoji] ${name} added to gc:${gcId}`)
+   811→    } catch (err) {
+   812→      console.error('[emoji:add] Error:', err)
+   813→      socket.emit('error', { message: 'Failed to add emoji', timestamp: now() })
+   814→    }
+   815→  })
+   816→
+   817→  socket.on('emoji:remove', (payload: { gcId: string; emojiId: string }) => {
+   818→    try {
+   819→      const userId = getUserId(socket)
+   820→      if (!userId) return
+   821→
+   822→      const { gcId, emojiId } = payload
+   823→
+   824→      if (!db.isMember(gcId, userId)) {
+   825→        socket.emit('error', { message: 'Not a member of this group chat', timestamp: now() })
+   826→        return
+   827→      }
+   828→
+   829→      // Fetch emoji before deleting
+   830→      const emoji = db.getEmojiById(emojiId)
+   831→
+   832→      db.removeEmoji(emojiId)
+   833→
+   834→      const emojiData = {
+   835→        id: emojiId,
+   836→        gcId,
+   837→        emoji: emoji ? {
+   838→          id: emoji.id,
+   839→          name: emoji.name,
+   840→          imageUrl: emoji.image_url,
+   841→        } : null,
+   842→        timestamp: now(),
+   843→      }
+   844→
+   845→      io.to(`gc:${gcId}`).emit('emoji:removed', emojiData)
+   846→
+   847→      console.log(`[emoji] ${emojiId} removed from gc:${gcId}`)
+   848→    } catch (err) {
+   849→      console.error('[emoji:remove] Error:', err)
+   850→      socket.emit('error', { message: 'Failed to remove emoji', timestamp: now() })
+   851→    }
+   852→  })
+   853→
+   854→  // ═══════════════════════════════════════════════════════════════════════════
+   855→  // DM VOICE CALLS
+   856→  // ═══════════════════════════════════════════════════════════════════════════
+   857→
+   858→  socket.on('dm:call', (payload: { dmConversationId: string }) => {
+   859→    try {
+   860→      const userId = getUserId(socket)
+   861→      if (!userId) return
+   862→
+   863→      const { dmConversationId } = payload
+   864→      const user = db.getUserById(userId)
+   865→      if (!user) return
+   866→
+   867→      // Look up the DM conversation
+   868→      const dm = db.getDMById(dmConversationId)
+   869→      if (!dm) {
+   870→        socket.emit('error', { message: 'DM conversation not found', timestamp: now() })
+   871→        return
+   872→      }
+   873→
+   874→      // Determine the other user in this DM
+   875→      const otherUserId = dm.user1_id === userId ? dm.user2_id : dm.user1_id
+   876→      const otherUser = db.getUserById(otherUserId)
+   877→      if (!otherUser) {
+   878→        socket.emit('error', { message: 'User not found', timestamp: now() })
+   879→        return
+   880→      }
+   881→
+   882→      console.log(`[dm:call] ${user.username} calling ${otherUser.username} in ${dmConversationId}`)
+   883→
+   884→      // Emit incoming call to the other user — try direct socket first, fallback to personal room
+   885→      const targetSocket = getSocketByUser(otherUserId)
+   886→      if (targetSocket) {
+   887→        targetSocket.emit('dm:call:incoming', {
+   888→          dmConversationId,
+   889→          callerId: userId,
+   890→          callerName: user.display_name || user.username,
+   891→          callerAvatar: user.avatar_url,
+   892→          timestamp: now(),
+   893→        })
+   894→        console.log(`[dm:call] Emitted dm:call:incoming to ${otherUser.username} via socket ${targetSocket.id}`)
+   895→      } else {
+   896→        // Fallback: emit via the user's personal room (joined on auth)
+   897→        io.to(`user:${otherUserId}`).emit('dm:call:incoming', {
+   898→          dmConversationId,
+   899→          callerId: userId,
+   900→          callerName: user.display_name || user.username,
+   901→          callerAvatar: user.avatar_url,
+   902→          timestamp: now(),
+   903→        })
+   904→        console.warn(`[dm:call] No direct socket for ${otherUserId}, sent via user:${otherUserId} room`)
+   905→      }
+   906→    } catch (err) {
+   907→      console.error('[dm:call] Error:', err)
+   908→    }
+   909→  })
+   910→
+   911→  socket.on('dm:call:answer', (payload: { dmConversationId: string }) => {
+   912→    try {
+   913→      const userId = getUserId(socket)
+   914→      if (!userId) return
+   915→
+   916→      const { dmConversationId } = payload
+   917→      const user = db.getUserById(userId)
+   918→      if (!user) return
+   919→
+   920→      const dm = db.getDMById(dmConversationId)
+   921→      if (!dm) return
+   922→
+   923→      const otherUserId = dm.user1_id === userId ? dm.user2_id : dm.user1_id
+   924→      const otherUser = db.getUserById(otherUserId)
+   925→      if (!otherUser) return
+   926→
+   927→      console.log(`[dm:call:answer] ${user.username} accepted call from ${otherUser.username}`)
+   928→
+   929→      // Notify both users the call is connected
+   930→      const connectedData = {
+   931→        dmConversationId,
+   932→        startedAt: now(),
+   933→      }
+   934→
+   935→      // To the caller (who answered)
+   936→      socket.emit('dm:call:connected', {
+   937→        ...connectedData,
+   938→        otherUserId,
+   939→        otherName: otherUser.display_name || otherUser.username,
+   940→        otherAvatar: otherUser.avatar_url,
+   941→      })
+   942→
+   943→      // To the callee (who initiated)
+   944→      emitToUser(otherUserId, 'dm:call:connected', {
+   945→        ...connectedData,
+   946→        otherUserId: userId,
+   947→        otherName: user.display_name || user.username,
+   948→        otherAvatar: user.avatar_url,
+   949→      })
+   950→    } catch (err) {
+   951→      console.error('[dm:call:answer] Error:', err)
+   952→    }
+   953→  })
+   954→
+   955→  socket.on('dm:call:decline', (payload: { dmConversationId: string }) => {
+   956→    try {
+   957→      const userId = getUserId(socket)
+   958→      if (!userId) return
+   959→
+   960→      const { dmConversationId } = payload
+   961→      const user = db.getUserById(userId)
+   962→      if (!user) return
+   963→
+   964→      const dm = db.getDMById(dmConversationId)
+   965→      if (!dm) return
+   966→
+   967→      const otherUserId = dm.user1_id === userId ? dm.user2_id : dm.user1_id
+   968→
+   969→      console.log(`[dm:call:decline] ${user.username} declined call`)
+   970→
+   971→      emitToUser(otherUserId, 'dm:call:ended', {
+   972→        dmConversationId,
+   973→        reason: 'declined',
+   974→        endedBy: userId,
+   975→      })
+   976→    } catch (err) {
+   977→      console.error('[dm:call:decline] Error:', err)
+   978→    }
+   979→  })
+   980→
+   981→  socket.on('dm:call:hangup', (payload: { dmConversationId: string }) => {
+   982→    try {
+   983→      const userId = getUserId(socket)
+   984→      if (!userId) return
+   985→
+   986→      const { dmConversationId } = payload
+   987→
+   988→      const dm = db.getDMById(dmConversationId)
+   989→      if (!dm) return
+   990→
+   991→      const otherUserId = dm.user1_id === userId ? dm.user2_id : dm.user1_id
+   992→
+   993→      console.log(`[dm:call:hangup] ${userId} hung up call in ${dmConversationId}`)
+   994→
+   995→      emitToUser(otherUserId, 'dm:call:ended', {
+   996→        dmConversationId,
+   997→        reason: 'hungup',
+   998→        endedBy: userId,
+   999→      })
+  1000→    } catch (err) {
+  1001→      console.error('[dm:call:hangup] Error:', err)
+  1002→    }
+  1003→  })
+  1004→
+  1005→  // ─── DM Call WebRTC Signal Relay ──────────────────────────────────────
+  1006→
+  1007→  socket.on('dm:call:signal', (payload: { dmConversationId: string; targetUserId: string; signal: any }) => {
+  1008→    try {
+  1009→      const userId = getUserId(socket)
+  1010→      if (!userId) return
+  1011→
+  1012→      const targetSocket = getSocketByUser(payload.targetUserId)
+  1013→      if (targetSocket) {
+  1014→        targetSocket.emit('dm:call:signal', {
+  1015→          fromUserId: userId,
+  1016→          dmConversationId: payload.dmConversationId,
+  1017→          signal: payload.signal,
+  1018→        })
+  1019→      }
+  1020→    } catch (err) {
+  1021→      console.error('[dm:call:signal] Error:', err)
+  1022→    }
+  1023→  })
+  1024→
+  1025→  // ═══════════════════════════════════════════════════════════════════════════
+  1026→  // DISCONNECT
+  1027→  // ═══════════════════════════════════════════════════════════════════════════
+  1028→
+  1029→  socket.on('disconnect', () => {
+  1030→    try {
+  1031→      const userId = socketToUser.get(socket.id)
+  1032→      if (!userId) {
+  1033→        console.log(`[disconnect] Unknown socket: ${socket.id}`)
+  1034→        return
+  1035→      }
+  1036→
+  1037→      const user = db.getUserById(userId)
+  1038→
+  1039→      // Set status to offline
+  1040→      db.updateUserStatus(userId, 'offline')
+  1041→
+  1042→      // Remove from tracking maps
+  1043→      socketToUser.delete(socket.id)
+  1044→      userToSocket.delete(userId)
+  1045→
+  1046→      // Get memberships for broadcasting
+  1047→      const gcList = db.getUserGCs(userId)
+  1048→
+  1049→      // Remove all voice sessions for this user
+  1050→      const voiceSession = db.getUserVoiceSession(userId)
+  1051→
+  1052→      // Broadcast presence update to all GC rooms
+  1053→      if (user) {
+  1054→        const presence = {
+  1055→          userId,
+  1056→          status: 'offline' as const,
+  1057→          ...sanitizeUser(user),
+  1058→          timestamp: now(),
+  1059→        }
+  1060→
+  1061→        for (const gc of gcList) {
+  1062→          io.to(`gc:${gc.id}`).emit('presence:update', presence)
+  1063→        }
+  1064→
+  1065→        const friends = db.getFriends(userId)
+  1066→        for (const f of friends) {
+  1067→          emitToUser(f.id, 'presence:update', presence)
+  1068→        }
+  1069→      }
+  1070→
+  1071→      // Broadcast VC leave if user was in a voice channel
+  1072→      if (voiceSession) {
+  1073→        db.leaveVoice(voiceSession.gc_id, userId)
+  1074→
+  1075→        io.to(`gc:${voiceSession.gc_id}`).emit('vc:user-left', {
+  1076→          userId,
+  1077→          username: user?.username,
+  1078→          displayName: user?.display_name,
+  1079→          gcId: voiceSession.gc_id,
+  1080→          timestamp: now(),
+  1081→        })
+  1082→
+  1083→      }
+  1084→
+  1085→      console.log(`[disconnect] User ${user?.username ?? userId} disconnected`)
+  1086→    } catch (err) {
+  1087→      console.error('[disconnect] Error:', err)
+  1088→    }
+  1089→  })
+  1090→
+  1091→  // ── Error Handler ────────────────────────────────────────────────────────
+  1092→
+  1093→  socket.on('error', (error) => {
+  1094→    console.error(`[socket:error] ${socket.id}:`, error)
+  1095→  })
+  1096→})
+  1097→
+  1098→// ─── Internal HTTP API (for Next.js API routes to trigger socket events) ───
+  1099→
+  1100→// Reuse the same httpServer — attach a raw HTTP handler for /api/internal/* routes
+  1101→httpServer.on('request', (req: IncomingMessage, res: ServerResponse) => {
+  1102→  // Let socket.io handle non-API requests
+  1103→  if (!req.url?.startsWith('/api/internal/')) return
+  1104→
+  1105→  let body = ''
+  1106→  req.on('data', (chunk: Buffer) => { body += chunk.toString() })
+  1107→  req.on('end', () => {
+  1108→    try {
+  1109→      const data = JSON.parse(body || '{}')
+  1110→
+  1111→      if (req.url === '/api/internal/message-deleted') {
+  1112→        const { messageId, gcId, dmConversationId } = data
+  1113→        const room = gcId ? `gc:${gcId}` : dmConversationId ? `dm:${dmConversationId}` : null
+  1114→        if (room) {
+  1115→          io.to(room).emit('message:deleted', { messageId, gcId, dmConversationId, timestamp: now() })
+  1116→        }
+  1117→        res.writeHead(200, { 'Content-Type': 'application/json' })
+  1118→        res.end(JSON.stringify({ ok: true }))
+  1119→      } else if (req.url === '/api/internal/message-edited') {
+  1120→        const { messageId, gcId, dmConversationId, newContent, editedAt, senderId } = data
+  1121→        const room = gcId ? `gc:${gcId}` : dmConversationId ? `dm:${dmConversationId}` : null
+  1122→        if (room) {
+  1123→          io.to(room).emit('message:edited', {
+  1124→            messageId, newContent, editedAt, senderId,
+  1125→            gcId, dmConversationId, timestamp: now()
+  1126→          })
+  1127→        }
+  1128→        res.writeHead(200, { 'Content-Type': 'application/json' })
+  1129→        res.end(JSON.stringify({ ok: true }))
+  1130→      } else if (req.url === '/api/internal/dm-conversation-created') {
+  1131→        // Notify the other user that a new DM conversation was created with them
+  1132→        const { conversationId, user1Id, user2Id, creatorId, otherUser, creatorUser } = data
+  1133→        // The recipient is the user who didn't create the DM
+  1134→        const recipientId = creatorId === user1Id ? user2Id : user1Id
+  1135→        
+  1136→        // Join the creator to the DM room (they might have created it after auth)
+  1137→        const creatorSocket = getSocketByUser(creatorId)
+  1138→        if (creatorSocket) {
+  1139→          creatorSocket.join(`dm:${conversationId}`)
+  1140→        }
+  1141→        
+  1142→        const recipientSocket = getSocketByUser(recipientId)
+  1143→        if (recipientSocket) {
+  1144→          // Join recipient to DM room so they receive messages
+  1145→          recipientSocket.join(`dm:${conversationId}`)
+  1146→          // Send the new DM conversation to the recipient
+  1147→          emitToUser(recipientId, 'dm:conversation:new', {
+  1148→            id: conversationId,
+  1149→            user1_id: user1Id,
+  1150→            user2_id: user2Id,
+  1151→            other_user: creatorUser || otherUser,
+  1152→            timestamp: now(),
+  1153→          })
+  1154→        }
+  1155→        res.writeHead(200, { 'Content-Type': 'application/json' })
+  1156→        res.end(JSON.stringify({ ok: true }))
+  1157→      } else {
+  1158→        res.writeHead(404)
+  1159→        res.end('Not found')
+  1160→      }
+  1161→    } catch (err) {
+  1162→      console.error('[internal-api] Error:', err)
+  1163→      res.writeHead(500)
+  1164→      res.end('Internal error')
+  1165→    }
+  1166→  })
+  1167→})
+  1168→
+  1169→// ─── Start Server ────────────────────────────────────────────────────────────
+  1170→
+  1171→httpServer.listen(PORT, () => {
+  1172→  console.log(`[chat-service] Socket.io server running on port ${PORT}`)
+  1173→})
+  1174→
+  1175→// ─── Graceful Shutdown ───────────────────────────────────────────────────────
+  1176→
+  1177→function shutdown(signal: string) {
+  1178→  console.log(`[chat-service] Received ${signal}, shutting down...`)
+  1179→  io.close()
+  1180→  httpServer.close(() => {
+  1181→    console.log('[chat-service] Server closed')
+  1182→    process.exit(0)
+  1183→  })
+  1184→}
+  1185→
+  1186→process.on('SIGTERM', () => shutdown('SIGTERM'))
+  1187→process.on('SIGINT', () => shutdown('SIGINT'))

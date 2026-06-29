@@ -1,0 +1,962 @@
+     1→'use client'
+     2→
+     3→import { useState, useEffect, useRef, useCallback } from 'react'
+     4→import { createPortal } from 'react-dom'
+     5→import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar'
+     6→import { Button } from '@/components/ui/button'
+     7→import { useAppStore } from '@/lib/store'
+     8→import { answerCall, declineCall, hangUpCall, sendDMCallSignal, onSocketEvent, offSocketEvent } from '@/lib/socket'
+     9→import {
+    10→  Phone,
+    11→  PhoneOff,
+    12→  PhoneIncoming,
+    13→  PhoneOutgoing,
+    14→  Mic,
+    15→  MicOff,
+    16→  Volume2,
+    17→  VolumeX,
+    18→  Headphones,
+    19→} from 'lucide-react'
+    20→import { cn } from '@/lib/utils'
+    21→
+    22→// ─── Ringtone (Web Audio API) ──────────────────────────────────────────────
+    23→
+    24→let ringtoneCtx: AudioContext | null = null
+    25→let ringtoneInterval: ReturnType<typeof setInterval> | null = null
+    26→let ringtonePlaying = false
+    27→let activeOscillators: OscillatorNode[] = []
+    28→let activeGain: GainNode | null = null
+    29→
+    30→function playRingtone() {
+    31→  if (ringtonePlaying) return
+    32→  ringtonePlaying = false // Reset first
+    33→  stopRingtone() // Clean up any previous state
+    34→  ringtonePlaying = true
+    35→
+    36→  try {
+    37→    ringtoneCtx = new AudioContext()
+    38→
+    39→    const playTone = () => {
+    40→      if (!ringtoneCtx || !ringtonePlaying) return
+    41→      if (ringtoneCtx.state === 'suspended') ringtoneCtx.resume()
+    42→
+    43→      // Stop any previously playing oscillators
+    44→      activeOscillators.forEach(o => { try { o.stop() } catch {} })
+    45→      activeOscillators = []
+    46→      if (activeGain) { try { activeGain.disconnect() } catch {} }
+    47→
+    48→      const osc1 = ringtoneCtx.createOscillator()
+    49→      const osc2 = ringtoneCtx.createOscillator()
+    50→      const gain = ringtoneCtx.createGain()
+    51→      activeOscillators = [osc1, osc2]
+    52→      activeGain = gain
+    53→
+    54→      osc1.type = 'sine'
+    55→      osc1.frequency.setValueAtTime(440, ringtoneCtx.currentTime)
+    56→      osc2.type = 'sine'
+    57→      osc2.frequency.setValueAtTime(523.25, ringtoneCtx.currentTime)
+    58→
+    59→      gain.gain.setValueAtTime(0, ringtoneCtx.currentTime)
+    60→      gain.gain.linearRampToValueAtTime(0.12, ringtoneCtx.currentTime + 0.05)
+    61→      gain.gain.linearRampToValueAtTime(0, ringtoneCtx.currentTime + 0.8)
+    62→
+    63→      osc1.connect(gain)
+    64→      osc2.connect(gain)
+    65→      gain.connect(ringtoneCtx.destination)
+    66→
+    67→      osc1.start(ringtoneCtx.currentTime)
+    68→      osc2.start(ringtoneCtx.currentTime)
+    69→      osc1.stop(ringtoneCtx.currentTime + 0.8)
+    70→      osc2.stop(ringtoneCtx.currentTime + 0.8)
+    71→    }
+    72→
+    73→    playTone()
+    74→    ringtoneInterval = setInterval(playTone, 2000)
+    75→  } catch {
+    76→    // Audio not available
+    77→  }
+    78→}
+    79→
+    80→function stopRingtone() {
+    81→  ringtonePlaying = false
+    82→  if (ringtoneInterval) {
+    83→    clearInterval(ringtoneInterval)
+    84→    ringtoneInterval = null
+    85→  }
+    86→  // Immediately stop all oscillators
+    87→  activeOscillators.forEach(o => { try { o.stop(); o.disconnect() } catch {} })
+    88→  activeOscillators = []
+    89→  if (activeGain) { try { activeGain.disconnect() } catch {} activeGain = null }
+    90→  // Close audio context
+    91→  if (ringtoneCtx) {
+    92→    try {
+    93→      ringtoneCtx.suspend().then(() => ringtoneCtx?.close().catch(() => {}))
+    94→    } catch {}
+    95→    ringtoneCtx = null
+    96→  }
+    97→}
+    98→
+    99→// ─── Helpers ────────────────────────────────────────────────────────────────
+   100→
+   101→function getInitials(name: string): string {
+   102→  return name
+   103→    .split(/[\s_]+/)
+   104→    .map((w) => w[0])
+   105→    .join('')
+   106→    .toUpperCase()
+   107→    .slice(0, 2)
+   108→}
+   109→
+   110→function formatDuration(startDate?: string): string {
+   111→  if (!startDate) return '0:00'
+   112→  const diff = Math.floor((Date.now() - new Date(startDate).getTime()) / 1000)
+   113→  const mins = Math.floor(diff / 60)
+   114→  const secs = diff % 60
+   115→  return `${mins}:${String(secs).padStart(2, '0')}`
+   116→}
+   117→
+   118→// ─── Ringing Animation ─────────────────────────────────────────────────────
+   119→
+   120→function RingingAnimation() {
+   121→  return (
+   122→    <div className="relative flex items-center justify-center">
+   123→      <div className="absolute w-32 h-32 rounded-full border-2 border-green-400/40 animate-ping" />
+   124→      <div className="absolute w-28 h-28 rounded-full border-2 border-green-400/30 animate-ping [animation-delay:500ms]" />
+   125→      <div className="absolute w-24 h-24 rounded-full border border-green-400/20 animate-pulse" />
+   126→    </div>
+   127→  )
+   128→}
+   129→
+   130→// ═══════════════════════════════════════════════════════════════════════════
+   131→// WebRTC Manager — singleton for DM call audio
+   132→// ═══════════════════════════════════════════════════════════════════════════
+   133→
+   134→const ICE_CONFIG: RTCConfiguration = {
+   135→  iceServers: [
+   136→    { urls: 'stun:stun.l.google.com:19302' },
+   137→    { urls: 'stun:stun1.l.google.com:19302' },
+   138→    { urls: 'stun:stun2.l.google.com:19302' },
+   139→  ],
+   140→}
+   141→
+   142→// Audio constraints — browser built-in echo cancellation + noise suppression
+   143→const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
+   144→  audio: {
+   145→    echoCancellation: true,
+   146→    noiseSuppression: true,
+   147→    autoGainControl: true,
+   148→  },
+   149→  video: false,
+   150→}
+   151→
+   152→// Module-level WebRTC state (singleton — only one DM call at a time)
+   153→let dmLocalStream: MediaStream | null = null
+   154→let dmPeerConnection: RTCPeerConnection | null = null
+   155→let dmRemoteAudioEl: HTMLAudioElement | null = null
+   156→let dmIsMuted = false
+   157→let dmIsDeafened = false
+   158→let dmAudioCtx: AudioContext | null = null
+   159→// Track signaling state to prevent race conditions
+   160→let dmSignalingState: 'idle' | 'creating-offer' | 'waiting-answer' | 'handling-offer' | 'connected' = 'idle'
+   161→
+   162→function cleanupDMCall() {
+   163→  // Close peer connection
+   164→  if (dmPeerConnection) {
+   165→    try { dmPeerConnection.close() } catch { /* ok */ }
+   166→    dmPeerConnection = null
+   167→  }
+   168→
+   169→  // Stop local stream
+   170→  if (dmLocalStream) {
+   171→    dmLocalStream.getTracks().forEach((t) => t.stop())
+   172→    dmLocalStream = null
+   173→  }
+   174→
+   175→  // Remove remote audio element
+   176→  if (dmRemoteAudioEl) {
+   177→    dmRemoteAudioEl.srcObject = null
+   178→    dmRemoteAudioEl.pause()
+   179→    dmRemoteAudioEl.remove()
+   180→    dmRemoteAudioEl = null
+   181→  }
+   182→
+   183→  // Close audio context
+   184→  if (dmAudioCtx) {
+   185→    try { dmAudioCtx.close() } catch { /* ok */ }
+   186→    dmAudioCtx = null
+   187→  }
+   188→
+   189→  dmIsMuted = false
+   190→  dmIsDeafened = false
+   191→  dmSignalingState = 'idle'
+   192→}
+   193→
+   194→async function setupLocalStream(): Promise<MediaStream | null> {
+   195→  try {
+   196→    const stream = await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS)
+   197→    dmLocalStream = stream
+   198→    console.log('[DM Call] Got local stream, tracks:', stream.getTracks().length, stream.getAudioTracks().map(t => `${t.kind}:${t.enabled}:${t.readyState}:${t.label}`))
+   199→    return stream
+   200→  } catch (err) {
+   201→    console.error('[DM Call] Failed to get microphone:', err)
+   202→    return null
+   203→  }
+   204→}
+   205→
+   206→function setDMCallMuted(muted: boolean) {
+   207→  dmIsMuted = muted
+   208→  if (dmLocalStream) {
+   209→    dmLocalStream.getAudioTracks().forEach((track) => {
+   210→      track.enabled = !muted
+   211→    })
+   212→  }
+   213→}
+   214→
+   215→function setDMCallDeafened(deafened: boolean) {
+   216→  dmIsDeafened = deafened
+   217→  if (dmRemoteAudioEl) {
+   218→    dmRemoteAudioEl.volume = deafened ? 0 : 1
+   219→    dmRemoteAudioEl.muted = deafened
+   220→  }
+   221→}
+   222→
+   223→// ─── Helper: set up remote audio element and play ────────────────────────
+   224→function ensureRemoteAudioAndPlay(stream: MediaStream) {
+   225→  if (!dmRemoteAudioEl) {
+   226→    dmRemoteAudioEl = document.createElement('audio')
+   227→    dmRemoteAudioEl.autoplay = true
+   228→    dmRemoteAudioEl.playsInline = true
+   229→    dmRemoteAudioEl.volume = dmIsDeafened ? 0 : 1
+   230→    dmRemoteAudioEl.muted = dmIsDeafened
+   231→    document.body.appendChild(dmRemoteAudioEl)
+   232→  }
+   233→  dmRemoteAudioEl.srcObject = stream
+   234→  // Explicitly play — autoplay can be blocked in some environments
+   235→  dmRemoteAudioEl.play().catch((e) => {
+   236→    console.warn('[DM Call] Remote audio play() failed:', e)
+   237→  })
+   238→}
+   239→
+   240→// ─── Caller: Create Offer ─────────────────────────────────────────────────
+   241→async function createOffer(dmConversationId: string, targetUserId: string): Promise<void> {
+   242→  const stream = dmLocalStream
+   243→  if (!stream) {
+   244→    console.error('[DM Call] createOffer: no local stream')
+   245→    return
+   246→  }
+   247→
+   248→  // Guard against double-calling
+   249→  if (dmPeerConnection) {
+   250→    console.warn('[DM Call] createOffer: peer connection already exists')
+   251→    return
+   252→  }
+   253→  dmSignalingState = 'creating-offer'
+   254→  console.log('[DM Call] Creating offer for', targetUserId, 'local tracks:', stream.getTracks().length)
+   255→
+   256→  try {
+   257→    const pc = new RTCPeerConnection(ICE_CONFIG)
+   258→    dmPeerConnection = pc
+   259→
+   260→    // Add local audio tracks
+   261→    stream.getTracks().forEach((track) => {
+   262→      pc.addTrack(track, stream)
+   263→    })
+   264→
+   265→    // Handle remote audio
+   266→    pc.ontrack = (event) => {
+   267→      console.log('[DM Call] ontrack fired, track:', event.track.kind, 'streams:', event.streams.length)
+   268→      // Use event.streams[0] if available, otherwise create a new stream from the track
+   269→      const remoteStream = event.streams && event.streams[0]
+   270→        ? event.streams[0]
+   271→        : new MediaStream([event.track])
+   272→      ensureRemoteAudioAndPlay(remoteStream)
+   273→    }
+   274→
+   275→    // Handle ICE candidates
+   276→    pc.onicecandidate = (event) => {
+   277→      if (event.candidate) {
+   278→        sendDMCallSignal(dmConversationId, targetUserId, {
+   279→          type: 'ice-candidate',
+   280→          candidate: event.candidate.toJSON(),
+   281→        })
+   282→      }
+   283→    }
+   284→
+   285→    // Handle connection state
+   286→    pc.onconnectionstatechange = () => {
+   287→      console.log('[DM Call] Connection state:', pc.connectionState, 'ICE:', pc.iceConnectionState)
+   288→      if (pc.connectionState === 'connected') {
+   289→        dmSignalingState = 'connected'
+   290→      } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+   291→        dmSignalingState = 'idle'
+   292→      }
+   293→    }
+   294→
+   295→    // Create and send offer
+   296→    const offer = await pc.createOffer({
+   297→      offerToReceiveAudio: true,
+   298→      offerToReceiveVideo: false,
+   299→    })
+   300→
+   301→    await pc.setLocalDescription(offer)
+   302→    dmSignalingState = 'waiting-answer'
+   303→
+   304→    console.log('[DM Call] Sending offer, SDP length:', pc.localDescription?.sdp?.length)
+   305→
+   306→    sendDMCallSignal(dmConversationId, targetUserId, {
+   307→      type: 'offer',
+   308→      sdp: pc.localDescription?.sdp,
+   309→    })
+   310→  } catch (err) {
+   311→    console.error('[DM Call] Failed to create offer:', err)
+   312→    dmSignalingState = 'idle'
+   313→    if (dmPeerConnection) {
+   314→      try { dmPeerConnection.close() } catch { /* ok */ }
+   315→      dmPeerConnection = null
+   316→    }
+   317→  }
+   318→}
+   319→
+   320→// ─── Caller: Handle Answer ─────────────────────────────────────────────────
+   321→async function handleAnswer(data: any): Promise<void> {
+   322→  const pc = dmPeerConnection
+   323→  if (!pc) return
+   324→
+   325→  // Guard: only set remote description if we're in waiting-answer state
+   326→  if (dmSignalingState !== 'waiting-answer') {
+   327→    console.warn('[DM Call] Ignoring answer — not in waiting-answer state:', dmSignalingState)
+   328→    return
+   329→  }
+   330→
+   331→  try {
+   332→    console.log('[DM Call] Received answer, SDP length:', data.signal.sdp?.length)
+   333→    await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.signal.sdp }))
+   334→    dmSignalingState = 'connected'
+   335→    console.log('[DM Call] Answer set successfully, waiting for ICE connection...')
+   336→  } catch (err) {
+   337→    console.error('[DM Call] Failed to set remote description (answer):', err)
+   338→  }
+   339→}
+   340→
+   341→// ─── Callee: Handle Incoming Offer ────────────────────────────────────────
+   342→async function handleIncomingOffer(dmConversationId: string, fromUserId: string, signal: any): Promise<void> {
+   343→  // Guard: don't handle if we already have a peer connection or are signaling
+   344→  if (dmPeerConnection) {
+   345→    console.warn('[DM Call] Ignoring offer — peer connection already exists')
+   346→    return
+   347→  }
+   348→  if (dmSignalingState !== 'idle') {
+   349→    console.warn('[DM Call] Ignoring offer — not in idle state:', dmSignalingState)
+   350→    return
+   351→  }
+   352→
+   353→  const stream = dmLocalStream
+   354→  if (!stream) {
+   355→    console.warn('[DM Call] No local stream when receiving offer')
+   356→    return
+   357→  }
+   358→
+   359→  dmSignalingState = 'handling-offer'
+   360→  console.log('[DM Call] Handling incoming offer from', fromUserId, 'local tracks:', stream.getTracks().length)
+   361→
+   362→  try {
+   363→    const pc = new RTCPeerConnection(ICE_CONFIG)
+   364→    dmPeerConnection = pc
+   365→
+   366→    // Add local tracks
+   367→    stream.getTracks().forEach((track) => {
+   368→      pc.addTrack(track, stream)
+   369→    })
+   370→
+   371→    // Handle remote audio
+   372→    pc.ontrack = (event) => {
+   373→      console.log('[DM Call] ontrack fired (callee), track:', event.track.kind, 'streams:', event.streams.length)
+   374→      const remoteStream = event.streams && event.streams[0]
+   375→        ? event.streams[0]
+   376→        : new MediaStream([event.track])
+   377→      ensureRemoteAudioAndPlay(remoteStream)
+   378→    }
+   379→
+   380→    // ICE candidates
+   381→    pc.onicecandidate = (event) => {
+   382→      if (event.candidate) {
+   383→        sendDMCallSignal(dmConversationId, fromUserId, {
+   384→          type: 'ice-candidate',
+   385→          candidate: event.candidate.toJSON(),
+   386→        })
+   387→      }
+   388→    }
+   389→
+   390→    // Handle connection state
+   391→    pc.onconnectionstatechange = () => {
+   392→      console.log('[DM Call] (callee) Connection state:', pc.connectionState, 'ICE:', pc.iceConnectionState)
+   393→      if (pc.connectionState === 'connected') {
+   394→        dmSignalingState = 'connected'
+   395→      } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+   396→        dmSignalingState = 'idle'
+   397→      }
+   398→    }
+   399→
+   400→    // Set remote description (the offer)
+   401→    await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: signal.sdp }))
+   402→
+   403→    // Create and send answer
+   404→    const answer = await pc.createAnswer()
+   405→    await pc.setLocalDescription(answer)
+   406→
+   407→    console.log('[DM Call] Sending answer, SDP length:', pc.localDescription?.sdp?.length)
+   408→
+   409→    sendDMCallSignal(dmConversationId, fromUserId, {
+   410→      type: 'answer',
+   411→      sdp: pc.localDescription?.sdp,
+   412→    })
+   413→
+   414→    dmSignalingState = 'connected'
+   415→  } catch (err) {
+   416→    console.error('[DM Call] Failed to handle incoming offer:', err)
+   417→    dmSignalingState = 'idle'
+   418→    if (dmPeerConnection) {
+   419→      try { dmPeerConnection.close() } catch { /* ok */ }
+   420→      dmPeerConnection = null
+   421→    }
+   422→  }
+   423→}
+   424→
+   425→// ─── Handle ICE Candidate ─────────────────────────────────────────────────
+   426→async function handleICECandidate(signal: any): Promise<void> {
+   427→  const pc = dmPeerConnection
+   428→  if (!pc || !signal.candidate) return
+   429→
+   430→  try {
+   431→    await pc.addIceCandidate(new RTCIceCandidate(signal.candidate))
+   432→  } catch {
+   433→    // ICE candidate may arrive after peer is closed — ignore
+   434→  }
+   435→}
+   436→
+   437→// ═══════════════════════════════════════════════════════════════════════════
+   438→// Incoming Call Overlay
+   439→// ═══════════════════════════════════════════════════════════════════════════
+   440→
+   441→function IncomingCallOverlay() {
+   442→  const incomingCall = useAppStore((s) => s.incomingCall)
+   443→  const setIncomingCall = useAppStore((s) => s.setIncomingCall)
+   444→  const setActiveCall = useAppStore((s) => s.setActiveCall)
+   445→  const setCallMuted = useAppStore((s) => s.setCallMuted)
+   446→  const setCallDeafened = useAppStore((s) => s.setCallDeafened)
+   447→  const countdownRef = useRef(30)
+   448→  const [countdown, setCountdown] = useState(30)
+   449→
+   450→  useEffect(() => {
+   451→    if (incomingCall) playRingtone()
+   452→    return () => stopRingtone()
+   453→  }, [incomingCall])
+   454→
+   455→  useEffect(() => {
+   456→    if (!incomingCall) return
+   457→    countdownRef.current = 30
+   458→    const timer = setInterval(() => {
+   459→      countdownRef.current -= 1
+   460→      if (countdownRef.current <= 0) {
+   461→        declineCall(incomingCall.dmConversationId)
+   462→        setIncomingCall(null)
+   463→        return
+   464→      }
+   465→      setCountdown(countdownRef.current)
+   466→    }, 1000)
+   467→    return () => clearInterval(timer)
+   468→  }, [incomingCall, setIncomingCall])
+   469→
+   470→  const handleAccept = useCallback(async () => {
+   471→    if (!incomingCall) return
+   472→    stopRingtone()
+   473→
+   474→    // Set up local stream BEFORE answering so it's ready for WebRTC
+   475→    await setupLocalStream()
+   476→    setDMCallMuted(false)
+   477→
+   478→    // IMPORTANT: Set activeCall with isCaller: false so we don't create an offer
+   479→    setActiveCall({
+   480→      dmConversationId: incomingCall.dmConversationId,
+   481→      callerId: incomingCall.callerId,
+   482→      callerName: incomingCall.callerName,
+   483→      callerAvatar: incomingCall.callerAvatar,
+   484→      status: 'connected',
+   485→      startedAt: new Date().toISOString(),
+   486→      isCaller: false,
+   487→    })
+   488→    setCallMuted(false)
+   489→    setCallDeafened(false)
+   490→    setIncomingCall(null)
+   491→
+   492→    // Now tell server we answered (server will emit dm:call:connected to both)
+   493→    answerCall(incomingCall.dmConversationId)
+   494→  }, [incomingCall, setIncomingCall, setActiveCall, setCallMuted, setCallDeafened])
+   495→
+   496→  const handleDecline = useCallback(() => {
+   497→    if (!incomingCall) return
+   498→    stopRingtone()
+   499→    declineCall(incomingCall.dmConversationId)
+   500→    setIncomingCall(null)
+   501→  }, [incomingCall, setIncomingCall])
+   502→
+   503→  if (!incomingCall) return null
+   504→
+   505→  return createPortal(
+   506→    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm">
+   507→      <div className="flex flex-col items-center gap-6 p-8 rounded-2xl bg-[#1e1f22] border border-white/10 shadow-2xl max-w-sm w-[90%]">
+   508→        <div className="relative flex items-center justify-center">
+   509→          <RingingAnimation />
+   510→          <Avatar className="relative z-10 w-24 h-24 ring-4 ring-green-500/50">
+   511→            {incomingCall.callerAvatar ? (
+   512→              <AvatarImage src={incomingCall.callerAvatar} alt={incomingCall.callerName} />
+   513→            ) : null}
+   514→            <AvatarFallback className="text-2xl font-bold bg-green-600 text-white">
+   515→              {getInitials(incomingCall.callerName)}
+   516→            </AvatarFallback>
+   517→          </Avatar>
+   518→        </div>
+   519→
+   520→        <div className="text-center space-y-1">
+   521→          <h2 className="text-xl font-bold text-white">{incomingCall.callerName}</h2>
+   522→          <div className="flex items-center justify-center gap-2 text-green-400">
+   523→            <PhoneIncoming className="w-4 h-4 animate-bounce" />
+   524→            <span className="text-sm font-medium">Incoming Call</span>
+   525→          </div>
+   526→        </div>
+   527→
+   528→        <div className="w-full h-1 rounded-full bg-white/10 overflow-hidden">
+   529→          <div
+   530→            className="h-full rounded-full bg-red-500/60 transition-all duration-1000 ease-linear"
+   531→            style={{ width: `${(countdown / 30) * 100}%` }}
+   532→          />
+   533→        </div>
+   534→
+   535→        <div className="flex items-center gap-6">
+   536→          <Button
+   537→            variant="ghost"
+   538→            size="lg"
+   539→            className="w-16 h-16 rounded-full bg-red-500/20 hover:bg-red-500/30 text-red-400 hover:text-red-300 border border-red-500/30 transition-colors"
+   540→            onClick={handleDecline}
+   541→            aria-label="Decline call"
+   542→          >
+   543→            <PhoneOff className="w-7 h-7" />
+   544→          </Button>
+   545→          <Button
+   546→            variant="ghost"
+   547→            size="lg"
+   548→            className="w-16 h-16 rounded-full bg-green-500/20 hover:bg-green-500/30 text-green-400 hover:text-green-300 border border-green-500/30 transition-colors"
+   549→            onClick={handleAccept}
+   550→            aria-label="Accept call"
+   551→          >
+   552→            <Phone className="w-7 h-7" />
+   553→          </Button>
+   554→        </div>
+   555→
+   556→        <span className="text-xs text-muted-foreground">
+   557→          {countdown}s remaining
+   558→        </span>
+   559→      </div>
+   560→    </div>,
+   561→    document.body
+   562→  )
+   563→}
+   564→
+   565→// ═══════════════════════════════════════════════════════════════════════════
+   566→// Outgoing Call Overlay
+   567→// ═══════════════════════════════════════════════════════════════════════════
+   568→
+   569→function OutgoingCallOverlay() {
+   570→  const activeCall = useAppStore((s) => s.activeCall)
+   571→  const setActiveCall = useAppStore((s) => s.setActiveCall)
+   572→
+   573→  useEffect(() => {
+   574→    if (activeCall?.status === 'ringing') playRingtone()
+   575→    return () => stopRingtone()
+   576→  }, [activeCall])
+   577→
+   578→  const handleCancel = useCallback(() => {
+   579→    if (!activeCall) return
+   580→    stopRingtone()
+   581→    cleanupDMCall()
+   582→    hangUpCall(activeCall.dmConversationId)
+   583→    setActiveCall(null)
+   584→  }, [activeCall, setActiveCall])
+   585→
+   586→  if (!activeCall || activeCall.status !== 'ringing') return null
+   587→
+   588→  return createPortal(
+   589→    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm">
+   590→      <div className="flex flex-col items-center gap-6 p-8 rounded-2xl bg-[#1e1f22] border border-white/10 shadow-2xl max-w-sm w-[90%]">
+   591→        <div className="relative flex items-center justify-center">
+   592→          <RingingAnimation />
+   593→          <Avatar className="relative z-10 w-24 h-24 ring-4 ring-blue-500/50">
+   594→            {activeCall.callerAvatar ? (
+   595→              <AvatarImage src={activeCall.callerAvatar} alt={activeCall.callerName} />
+   596→            ) : null}
+   597→            <AvatarFallback className="text-2xl font-bold bg-blue-600 text-white">
+   598→              {getInitials(activeCall.callerName)}
+   599→            </AvatarFallback>
+   600→          </Avatar>
+   601→        </div>
+   602→
+   603→        <div className="text-center space-y-1">
+   604→          <h2 className="text-xl font-bold text-white">{activeCall.callerName}</h2>
+   605→          <div className="flex items-center justify-center gap-2 text-blue-400">
+   606→            <PhoneOutgoing className="w-4 h-4 animate-bounce" />
+   607→            <span className="text-sm font-medium">Calling...</span>
+   608→          </div>
+   609→        </div>
+   610→
+   611→        <Button
+   612→          variant="ghost"
+   613→          size="lg"
+   614→          className="w-16 h-16 rounded-full bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/30 transition-colors"
+   615→          onClick={handleCancel}
+   616→          aria-label="Cancel call"
+   617→        >
+   618→          <PhoneOff className="w-7 h-7" />
+   619→        </Button>
+   620→      </div>
+   621→    </div>,
+   622→    document.body
+   623→  )
+   624→}
+   625→
+   626→// ═══════════════════════════════════════════════════════════════════════════
+   627→// Active Call Bar
+   628→// ═══════════════════════════════════════════════════════════════════════════
+   629→
+   630→function ActiveCallBar() {
+   631→  const activeCall = useAppStore((s) => s.activeCall)
+   632→  const isCallMuted = useAppStore((s) => s.isCallMuted)
+   633→  const isCallDeafened = useAppStore((s) => s.isCallDeafened)
+   634→  const setActiveCall = useAppStore((s) => s.setActiveCall)
+   635→  const setCallMuted = useAppStore((s) => s.setCallMuted)
+   636→  const setCallDeafened = useAppStore((s) => s.setCallDeafened)
+   637→  const [duration, setDuration] = useState('0:00')
+   638→  const [isSpeaking, setIsSpeaking] = useState(false)
+   639→
+   640→  // Timer for call duration
+   641→  useEffect(() => {
+   642→    if (!activeCall?.startedAt || activeCall.status !== 'connected') return
+   643→
+   644→    const interval = setInterval(() => {
+   645→      setDuration(formatDuration(activeCall.startedAt))
+   646→    }, 1000)
+   647→
+   648→    return () => clearInterval(interval)
+   649→  }, [activeCall?.startedAt, activeCall?.status])
+   650→
+   651→  // Speaking detection
+   652→  useEffect(() => {
+   653→    if (!activeCall?.startedAt || activeCall.status !== 'connected') return
+   654→    if (!dmLocalStream) return
+   655→
+   656→    let animFrame = 0
+   657→    let prevSpeaking = false
+   658→
+   659→    // Create a dedicated analyser for speaking detection
+   660→    const analyserCtx = new AudioContext({ sampleRate: 48000 })
+   661→    const analyser = analyserCtx.createAnalyser()
+   662→    analyser.fftSize = 1024
+   663→    analyser.smoothingTimeConstant = 0.85
+   664→    const source = analyserCtx.createMediaStreamSource(dmLocalStream)
+   665→    source.connect(analyser)
+   666→
+   667→    const detect = () => {
+   668→      const data = new Uint8Array(analyser.fftSize)
+   669→      analyser.getByteTimeDomainData(data)
+   670→      let sum = 0
+   671→      for (let i = 0; i < data.length; i++) {
+   672→        const v = (data[i] - 128) / 128
+   673→        sum += v * v
+   674→      }
+   675→      const level = Math.sqrt(sum / data.length) * 100
+   676→      const nowSpeaking = level > 10 && !dmIsMuted
+   677→      if (nowSpeaking !== prevSpeaking) {
+   678→        prevSpeaking = nowSpeaking
+   679→        setIsSpeaking(nowSpeaking)
+   680→      }
+   681→      animFrame = requestAnimationFrame(detect)
+   682→    }
+   683→
+   684→    animFrame = requestAnimationFrame(detect)
+   685→
+   686→    return () => {
+   687→      cancelAnimationFrame(animFrame)
+   688→      source.disconnect()
+   689→      analyser.disconnect()
+   690→      analyserCtx.close().catch(() => {})
+   691→    }
+   692→  }, [activeCall?.startedAt, activeCall?.status])
+   693→
+   694→  // ─── ONLY the caller creates the offer ──────────────────────────────────
+   695→  // The callee (isCaller: false) waits for incoming offers
+   696→  useEffect(() => {
+   697→    if (!activeCall || activeCall.status !== 'connected') return
+   698→    if (!activeCall.isCaller) return // Only caller creates offers
+   699→    if (!dmLocalStream) return
+   700→    if (dmPeerConnection) return // Already created
+   701→    if (dmSignalingState !== 'idle') return
+   702→
+   703→    createOffer(activeCall.dmConversationId, activeCall.callerId).catch((err) => {
+   704→      console.error('[DM Call] Failed to create offer:', err)
+   705→    })
+   706→  }, [activeCall?.status, activeCall?.dmConversationId, activeCall?.callerId, activeCall?.isCaller])
+   707→
+   708→  const handleHangUp = useCallback(() => {
+   709→    if (!activeCall) return
+   710→    cleanupDMCall()
+   711→    hangUpCall(activeCall.dmConversationId)
+   712→    setActiveCall(null)
+   713→    setCallMuted(false)
+   714→    setCallDeafened(false)
+   715→    setIsSpeaking(false)
+   716→  }, [activeCall, setActiveCall, setCallMuted, setCallDeafened])
+   717→
+   718→  const handleToggleMute = useCallback(() => {
+   719→    const newMuted = !isCallMuted
+   720→    setCallMuted(newMuted)
+   721→    setDMCallMuted(newMuted)
+   722→  }, [isCallMuted, setCallMuted])
+   723→
+   724→  const handleToggleDeafen = useCallback(() => {
+   725→    const newDeafened = !isCallDeafened
+   726→    setCallDeafened(newDeafened)
+   727→    setDMCallDeafened(newDeafened)
+   728→    // Deafen also mutes
+   729→    if (newDeafened && !isCallMuted) {
+   730→      setCallMuted(true)
+   731→      setDMCallMuted(true)
+   732→    }
+   733→  }, [isCallDeafened, isCallMuted, setCallDeafened, setCallMuted])
+   734→
+   735→  if (!activeCall || activeCall.status !== 'connected') return null
+   736→
+   737→  return createPortal(
+   738→    <div className="fixed bottom-0 left-0 right-0 z-[100]">
+   739→      <div className="mx-auto max-w-lg">
+   740→        <div className="mx-3 mb-3 flex items-center justify-between rounded-xl bg-[#1e1f22] border border-white/10 shadow-xl px-4 py-3">
+   741→          {/* Left: caller info + duration */}
+   742→          <div className="flex items-center gap-3 min-w-0">
+   743→            <div className="relative shrink-0">
+   744→              <div className={cn(
+   745→                'absolute inset-0 rounded-full animate-pulse',
+   746→                isSpeaking && !isCallMuted ? 'bg-green-500/40' : 'bg-green-500/20'
+   747→              )} />
+   748→              <Avatar className={cn(
+   749→                'relative w-10 h-10 ring-2 transition-colors',
+   750→                isSpeaking && !isCallMuted ? 'ring-green-400' : 'ring-green-500'
+   751→              )}>
+   752→                {activeCall.callerAvatar ? (
+   753→                  <AvatarImage src={activeCall.callerAvatar} alt={activeCall.callerName} />
+   754→                ) : null}
+   755→                <AvatarFallback className="text-xs font-bold bg-green-600 text-white">
+   756→                  {getInitials(activeCall.callerName)}
+   757→                </AvatarFallback>
+   758→              </Avatar>
+   759→            </div>
+   760→            <div className="min-w-0">
+   761→              <p className="text-sm font-semibold text-white truncate">
+   762→                {activeCall.callerName}
+   763→              </p>
+   764→              <div className="flex items-center gap-1.5">
+   765→                {isSpeaking && !isCallMuted ? (
+   766→                  <Volume2 className="w-3 h-3 text-green-400" />
+   767→                ) : (
+   768→                  <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
+   769→                )}
+   770→                <span className="text-xs text-green-400 font-medium tabular-nums">
+   771→                  {duration}
+   772→                </span>
+   773→              </div>
+   774→            </div>
+   775→          </div>
+   776→
+   777→          {/* Right: controls */}
+   778→          <div className="flex items-center gap-1.5">
+   779→            {/* Mute/Unmute */}
+   780→            <Button
+   781→              variant="ghost"
+   782→              size="icon"
+   783→              className={cn(
+   784→                'w-10 h-10 rounded-full border transition-all',
+   785→                isCallMuted
+   786→                  ? 'bg-red-500/20 hover:bg-red-500/30 text-red-400 border-red-500/30'
+   787→                  : 'bg-white/5 hover:bg-white/10 text-muted-foreground border-white/10'
+   788→              )}
+   789→              onClick={handleToggleMute}
+   790→              aria-label={isCallMuted ? 'Unmute' : 'Mute'}
+   791→            >
+   792→              {isCallMuted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+   793→            </Button>
+   794→
+   795→            {/* Deafen/Undeafen */}
+   796→            <Button
+   797→              variant="ghost"
+   798→              size="icon"
+   799→              className={cn(
+   800→                'w-10 h-10 rounded-full border transition-all',
+   801→                isCallDeafened
+   802→                  ? 'bg-red-500/20 hover:bg-red-500/30 text-red-400 border-red-500/30'
+   803→                  : 'bg-white/5 hover:bg-white/10 text-muted-foreground border-white/10'
+   804→              )}
+   805→              onClick={handleToggleDeafen}
+   806→              aria-label={isCallDeafened ? 'Undeafen' : 'Deafen'}
+   807→            >
+   808→              {isCallDeafened ? <VolumeX className="w-5 h-5" /> : <Headphones className="w-5 h-5" />}
+   809→            </Button>
+   810→
+   811→            {/* Hang Up */}
+   812→            <Button
+   813→              variant="ghost"
+   814→              size="icon"
+   815→              className="w-10 h-10 rounded-full bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/30 transition-colors"
+   816→              onClick={handleHangUp}
+   817→              aria-label="Hang up"
+   818→            >
+   819→              <PhoneOff className="w-5 h-5" />
+   820→            </Button>
+   821→          </div>
+   822→        </div>
+   823→      </div>
+   824→    </div>,
+   825→    document.body
+   826→  )
+   827→}
+   828→
+   829→// ═══════════════════════════════════════════════════════════════════════════
+   830→// Main DMCallUI Component — handles WebRTC signal events
+   831→// ═══════════════════════════════════════════════════════════════════════════
+   832→
+   833→export function DMCallUI() {
+   834→  const activeCall = useAppStore((s) => s.activeCall)
+   835→  const setActiveCall = useAppStore((s) => s.setActiveCall)
+   836→  const setCallMuted = useAppStore((s) => s.setCallMuted)
+   837→  const setCallDeafened = useAppStore((s) => s.setCallDeafened)
+   838→  const incomingCall = useAppStore((s) => s.incomingCall)
+   839→
+   840→  // ─── Socket listeners for DM call incoming/connected/ended (self-contained) ─
+   841→  useEffect(() => {
+   842→    const onIncoming = (data: any) => {
+   843→      console.log('[DMCallUI] dm:call:incoming received:', data)
+   844→      const s = useAppStore.getState()
+   845→      s.setIncomingCall({
+   846→        dmConversationId: data.dmConversationId,
+   847→        callerId: data.callerId,
+   848→        callerName: data.callerName,
+   849→        callerAvatar: data.callerAvatar,
+   850→      })
+   851→    }
+   852→
+   853→    const onConnected = (data: any) => {
+   854→      console.log('[DMCallUI] dm:call:connected received:', data)
+   855→      stopRingtone()
+   856→      const s = useAppStore.getState()
+   857→      const existingCall = s.activeCall
+   858→      s.setActiveCall({
+   859→        ...existingCall,
+   860→        dmConversationId: data.dmConversationId,
+   861→        callerId: existingCall?.callerId || data.otherUserId,
+   862→        callerName: existingCall?.callerName || data.otherName,
+   863→        callerAvatar: existingCall?.callerAvatar || data.otherAvatar,
+   864→        status: 'connected',
+   865→        startedAt: data.startedAt || new Date().toISOString(),
+   866→        isCaller: existingCall?.isCaller ?? false,
+   867→      })
+   868→      s.setIncomingCall(null)
+   869→    }
+   870→
+   871→    const onEnded = (data: any) => {
+   872→      console.log('[DMCallUI] dm:call:ended received:', data)
+   873→      stopRingtone()
+   874→      cleanupDMCall()
+   875→      const s = useAppStore.getState()
+   876→      s.setActiveCall(null)
+   877→      s.setIncomingCall(null)
+   878→      s.setCallMuted(false)
+   879→      s.setCallDeafened(false)
+   880→    }
+   881→
+   882→    onSocketEvent('dm:call:incoming', onIncoming)
+   883→    onSocketEvent('dm:call:connected', onConnected)
+   884→    onSocketEvent('dm:call:ended', onEnded)
+   885→
+   886→    return () => {
+   887→      offSocketEvent('dm:call:incoming', onIncoming)
+   888→      offSocketEvent('dm:call:connected', onConnected)
+   889→      offSocketEvent('dm:call:ended', onEnded)
+   890→    }
+   891→  }, [])
+   892→
+   893→  // ─── Socket listener for DM call signals ─────────────────────────────────
+   894→  useEffect(() => {
+   895→    const handler = async (data: any) => {
+   896→      const { fromUserId, dmConversationId, signal } = data
+   897→
+   898→      console.log('[DM Call] Signal received:', signal.type, 'from:', fromUserId, 'conv:', dmConversationId)
+   899→
+   900→      // Only handle signals for our active call
+   901→      const currentCall = useAppStore.getState().activeCall
+   902→      if (!currentCall) {
+   903→        console.warn('[DM Call] Signal ignored — no active call')
+   904→        return
+   905→      }
+   906→      if (currentCall.dmConversationId !== dmConversationId) {
+   907→        console.warn('[DM Call] Signal ignored — conv mismatch:', currentCall.dmConversationId, '!=', dmConversationId)
+   908→        return
+   909→      }
+   910→
+   911→      if (signal.type === 'offer') {
+   912→        // Callee receives offer from caller
+   913→        if (!dmLocalStream) {
+   914→          console.log('[DM Call] No local stream yet, setting up...')
+   915→          await setupLocalStream()
+   916→        }
+   917→        await handleIncomingOffer(dmConversationId, fromUserId, signal)
+   918→      } else if (signal.type === 'answer') {
+   919→        // Caller receives answer from callee
+   920→        await handleAnswer(data)
+   921→      } else if (signal.type === 'ice-candidate') {
+   922→        await handleICECandidate(signal)
+   923→      }
+   924→    }
+   925→
+   926→    onSocketEvent('dm:call:signal', handler)
+   927→
+   928→    return () => {
+   929→      offSocketEvent('dm:call:signal', handler)
+   930→    }
+   931→  }, [])
+   932→
+   933→  // ─── Set up local stream when outgoing call is initiated (caller) ────────
+   934→  useEffect(() => {
+   935→    if (activeCall?.status === 'ringing' && activeCall.isCaller) {
+   936→      // Pre-capture mic while ringing so it's ready when call connects
+   937→      setupLocalStream().catch(() => {})
+   938→    }
+   939→  }, [activeCall?.status === 'ringing'])
+   940→
+   941→  // ─── Clean up when call ends ─────────────────────────────────────────────
+   942→  useEffect(() => {
+   943→    if (!activeCall && !incomingCall) {
+   944→      cleanupDMCall()
+   945→    }
+   946→  }, [activeCall, incomingCall])
+   947→
+   948→  // ─── Reset mute/deafen on unmount ────────────────────────────────────────
+   949→  useEffect(() => {
+   950→    return () => {
+   951→      cleanupDMCall()
+   952→    }
+   953→  }, [])
+   954→
+   955→  return (
+   956→    <>
+   957→      <IncomingCallOverlay />
+   958→      <OutgoingCallOverlay />
+   959→      <ActiveCallBar />
+   960→    </>
+   961→  )
+   962→}

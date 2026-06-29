@@ -1,0 +1,10 @@
+{
+  "name": "UREEDXDCHAT",
+  "short_name": "UREEDXDCHAT",
+  "description": "Real-time group messaging platform",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#313338",
+  "theme_color": "#23a559",
+  "icons": []
+}

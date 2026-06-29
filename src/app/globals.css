@@ -41,76 +41,93 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
+  --color-discord-dark: #313338;
+  --color-discord-darker: #2b2d31;
+  --color-discord-darkest: #1e1f22;
+  --color-discord-sidebar: #2b2d31;
+  --color-discord-input: #383a40;
+  --color-discord-hover: #35373c;
+  --color-discord-active: #404249;
+  --color-discord-green: #23a559;
+  --color-discord-yellow: #f0b232;
+  --color-discord-red: #f23f43;
+  --color-discord-muted: #949ba4;
 }
+
+/* ─── Light Theme ─────────────────────────────────────────────────────────── */
 
 :root {
-  --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --radius: 0.5rem;
+  --background: #ffffff;
+  --foreground: #313338;
+  --card: #f2f3f5;
+  --card-foreground: #313338;
+  --popover: #ffffff;
+  --popover-foreground: #313338;
+  --primary: #23a559;
+  --primary-foreground: #ffffff;
+  --secondary: #e3e5e8;
+  --secondary-foreground: #313338;
+  --muted: #ebedef;
+  --muted-foreground: #6d6f78;
+  --accent: #e3e5e8;
+  --accent-foreground: #313338;
+  --destructive: #f23f43;
+  --border: #e3e5e8;
+  --input: #ebedef;
+  --ring: #23a559;
+  --chart-1: #23a559;
+  --chart-2: #f0b232;
+  --chart-3: #f23f43;
+  --chart-4: #e07c4f;
+  --chart-5: #9b84ee;
+  --sidebar: #f2f3f5;
+  --sidebar-foreground: #313338;
+  --sidebar-primary: #23a559;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #e3e5e8;
+  --sidebar-accent-foreground: #313338;
+  --sidebar-border: #e3e5e8;
+  --sidebar-ring: #23a559;
 }
 
+/* ─── Dark Theme (Discord-inspired) ───────────────────────────────────────── */
+
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --background: #313338;
+  --foreground: #dbdee1;
+  --card: #2b2d31;
+  --card-foreground: #dbdee1;
+  --popover: #2b2d31;
+  --popover-foreground: #dbdee1;
+  --primary: #23a559;
+  --primary-foreground: #ffffff;
+  --secondary: #35373c;
+  --secondary-foreground: #dbdee1;
+  --muted: #35373c;
+  --muted-foreground: #949ba4;
+  --accent: #35373c;
+  --accent-foreground: #dbdee1;
+  --destructive: #f23f43;
+  --border: #3f4147;
+  --input: #383a40;
+  --ring: #23a559;
+  --chart-1: #23a559;
+  --chart-2: #f0b232;
+  --chart-3: #f23f43;
+  --chart-4: #e07c4f;
+  --chart-5: #9b84ee;
+  --sidebar: #2b2d31;
+  --sidebar-foreground: #dbdee1;
+  --sidebar-primary: #23a559;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #35373c;
+  --sidebar-accent-foreground: #dbdee1;
+  --sidebar-border: #3f4147;
+  --sidebar-ring: #23a559;
 }
+
+/* ─── Base ────────────────────────────────────────────────────────────────── */
 
 @layer base {
   * {
@@ -119,4 +136,112 @@
   body {
     @apply bg-background text-foreground;
   }
+}
+
+/* ─── Discord-style Scrollbar ─────────────────────────────────────────────── */
+
+@layer base {
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #1a1b1e;
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #27282c;
+  }
+  :not(.dark) ::-webkit-scrollbar-thumb {
+    background: #c4c9ce;
+  }
+  :not(.dark) ::-webkit-scrollbar-thumb:hover {
+    background: #b1b5ba;
+  }
+
+  /* Thin scrollbar for sidebar */
+  .thin-scrollbar::-webkit-scrollbar {
+    width: 4px;
+  }
+  .thin-scrollbar::-webkit-scrollbar-thumb {
+    background: transparent;
+    border-radius: 2px;
+  }
+  .thin-scrollbar:hover::-webkit-scrollbar-thumb {
+    background: #1a1b1e;
+  }
+  .thin-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+/* ─── Discord Chat Message Styles ─────────────────────────────────────────── */
+
+.message-content a {
+  color: var(--chart-1);
+  text-decoration: none;
+}
+.message-content a:hover {
+  text-decoration: underline;
+}
+
+/* Typing indicator animation */
+@keyframes typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); }
+  30% { transform: translateY(-4px); }
+}
+.typing-dot {
+  animation: typing-bounce 1.4s infinite;
+}
+.typing-dot:nth-child(2) { animation-delay: 0.2s; }
+.typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+/* Voice channel pulse */
+@keyframes voice-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.voice-pulse {
+  animation: voice-pulse 1.5s ease-in-out infinite;
+}
+
+/* ─── Custom utilities ────────────────────────────────────────────────────── */
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* ─── Glassy Theme Effects ────────────────────────────────────────────────── */
+
+.theme-glassy [data-slot="sidebar"],
+.theme-glassy .sidebar-root {
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+}
+
+.theme-glassy [data-slot="card"],
+.theme-glassy [data-slot="popover"] {
+  backdrop-filter: blur(12px) saturate(150%);
+  -webkit-backdrop-filter: blur(12px) saturate(150%);
+}
+
+.theme-glassy .bg-background {
+  background: transparent !important;
+}
+
+/* ─── Prevent flash of wrong theme ─────────────────────────────────────── */
+/* Default to dark background to match next-themes defaultTheme="dark" */
+html {
+  background-color: var(--color-background, #313338);
+}
+
+html:not(.dark) {
+  background-color: var(--color-background, #ffffff);
 }

@@ -1,0 +1,617 @@
+     1→'use client'
+     2→
+     3→import React, { useState, useEffect, useCallback, useRef, memo } from 'react'
+     4→import dynamic from 'next/dynamic'
+     5→import { useAppStore } from '@/lib/store'
+     6→import {
+     7→  connectSocket,
+     8→  disconnectSocket,
+     9→  onSocketEvent,
+    10→  offSocketEvent,
+    11→} from '@/lib/socket'
+    12→import { LoginView } from '@/components/LoginView'
+    13→import { Sidebar } from '@/components/Sidebar'
+    14→import { ChatView } from '@/components/ChatView'
+    15→import MemberPanel from '@/components/MemberPanel'
+    16→import { Menu, Moon, Sun, X, Users } from 'lucide-react'
+    17→import { Button } from '@/components/ui/button'
+    18→import { useTheme } from 'next-themes'
+    19→import { useIsMobile } from '@/hooks/use-mobile'
+    20→import { playNotificationSound } from '@/lib/notification-sound'
+    21→import { toast } from 'sonner'
+    22→
+    23→// ─── Lazy-loaded components (don't block initial paint) ──────────────────
+    24→const FriendsView = dynamic(() => import('@/components/FriendsView').then(m => ({ default: m.FriendsView })), { ssr: false })
+    25→const CreateGCDialog = dynamic(() => import('@/components/CreateGCDialog').then(m => ({ default: m.CreateGCDialog })), { ssr: false })
+    26→const StartDMDialog = dynamic(() => import('@/components/StartDMDialog').then(m => ({ default: m.StartDMDialog })), { ssr: false })
+    27→const GCSettingsDialog = dynamic(() => import('@/components/GCSettingsDialog'), { ssr: false })
+    28→const ProfileDialog = dynamic(() => import('@/components/ProfileDialog'), { ssr: false })
+    29→const AddMemberDialog = dynamic(() => import('@/components/AddMemberDialog'), { ssr: false })
+    30→const DMCallUI = dynamic(() => import('@/components/DMCallUI').then(m => ({ default: m.DMCallUI })), { ssr: false })
+    31→
+    32→// ─── Main Application Page ─────────────────────────────────────────────────
+    33→
+    34→export default function AppPage() {
+    35→  // ─── Selectors (only re-render when these specific values change) ───────
+    36→  const isAuthenticated = useAppStore((s) => s.isAuthenticated)
+    37→  const currentUser = useAppStore((s) => s.currentUser)
+    38→  const activeView = useAppStore((s) => s.activeView)
+    39→  const selectedGCId = useAppStore((s) => s.selectedGCId)
+    40→  const selectedDMConversationId = useAppStore((s) => s.selectedDMConversationId)
+    41→  const sidebarOpen = useAppStore((s) => s.sidebarOpen)
+    42→  const rightPanelOpen = useAppStore((s) => s.rightPanelOpen)
+    43→  const userGCs = useAppStore((s) => s.userGCs)
+    44→
+    45→  const { theme, setTheme } = useTheme()
+    46→  const isMobile = useIsMobile()
+    47→  const [mounted, setMounted] = useState(false)
+    48→  const initializedRef = useRef(false)
+    49→
+    50→  // Dialog states
+    51→  const [createGCOpen, setCreateGCOpen] = useState(false)
+    52→  const [startDMOpen, setStartDMOpen] = useState(false)
+    53→  const [profileOpen, setProfileOpen] = useState(false)
+    54→  const [gcSettingsOpen, setGCSettingsOpen] = useState(false)
+    55→  const [addMemberOpen, setAddMemberOpen] = useState(false)
+    56→
+    57→  // ─── Track mobile state (use getState to avoid dependency on store) ────
+    58→  useEffect(() => {
+    59→    const { setIsMobile, setSidebarOpen } = useAppStore.getState()
+    60→    setIsMobile(isMobile)
+    61→    if (!isMobile) {
+    62→      setSidebarOpen(false)
+    63→    }
+    64→  }, [isMobile])
+    65→
+    66→  // ─── Hydration ──────────────────────────────────────────────────────────
+    67→  useEffect(() => {
+    68→    setMounted(true)
+    69→  }, [])
+    70→
+    71→  // ─── Initialize data after auth ─────────────────────────────────────────
+    72→  const initializeData = useCallback(async (userId: string) => {
+    73→    try {
+    74→      const res = await fetch(`/api/init?userId=${userId}`)
+    75→      if (res.ok) {
+    76→        const { gcs, dms, friends, requests, gcEmojis } = await res.json()
+    77→        const { setUserGCs, setDMConversations, setFriends, setPendingRequests, setCustomEmojis } = useAppStore.getState()
+    78→        if (gcs) setUserGCs(gcs)
+    79→        if (dms) setDMConversations(dms)
+    80→        if (friends) setFriends(friends)
+    81→        if (requests) setPendingRequests(requests)
+    82→        // Load all GC emojis so they're available in DMs too
+    83→        if (gcEmojis && typeof gcEmojis === 'object') {
+    84→          for (const [gcId, emojis] of Object.entries(gcEmojis)) {
+    85→            if (Array.isArray(emojis) && emojis.length > 0) {
+    86→              setCustomEmojis(gcId, emojis)
+    87→            }
+    88→          }
+    89→        }
+    90→      }
+    91→    } catch (err) {
+    92→      console.error('Failed to initialize data:', err)
+    93→    }
+    94→  }, [])
+    95→
+    96→  // ─── Socket event listeners ─────────────────────────────────────────────
+    97→  useEffect(() => {
+    98→    if (!currentUser) return
+    99→
+   100→    const userId = currentUser.id
+   101→    connectSocket(userId)
+   102→    initializeData(userId)
+   103→
+   104→    // All handlers use getState() to avoid stale closures and infinite loops
+   105→    const onNewMessage = (msg: any) => {
+   106→      // Normalize server camelCase → client snake_case
+   107→      const normalized = {
+   108→        id: msg.id,
+   109→        gc_id: msg.gcId ?? msg.gc_id ?? null,
+   110→        dm_conversation_id: msg.dmConversationId ?? msg.dm_conversation_id ?? null,
+   111→        sender_id: msg.senderId ?? msg.sender?.id ?? null,
+   112→        content: msg.content,
+   113→        type: msg.type ?? 'text',
+   114→        attachment_url: msg.attachmentUrl ?? msg.attachment_url ?? null,
+   115→        reply_to_id: msg.replyToId ?? msg.reply_to_id ?? null,
+   116→        created_at: msg.createdAt ?? msg.created_at ?? new Date().toISOString(),
+   117→        sender: msg.sender ? {
+   118→          id: msg.sender.id,
+   119→          username: msg.sender.username,
+   120→          display_name: msg.sender.displayName ?? msg.sender.display_name,
+   121→          avatar_url: msg.sender.avatarUrl ?? msg.sender.avatar_url,
+   122→        } : null,
+   123→      }
+   124→
+   125→      // ─── Notification logic ──────────────────────────────────────────
+   126→      const channelId = normalized.gc_id || normalized.dm_conversation_id
+   127→      if (channelId) {
+   128→        const s = useAppStore.getState()
+   129→        const isOwnMessage = normalized.sender_id === s.currentUser?.id
+   130→        const isCurrentlyViewing =
+   131→          (normalized.gc_id && s.selectedGCId === normalized.gc_id) ||
+   132→          (normalized.dm_conversation_id && s.selectedDMConversationId === normalized.dm_conversation_id)
+   133→
+   134→        if (!isOwnMessage && !isCurrentlyViewing) {
+   135→          // Check if this message mentions/replies to the current user
+   136→          const myUsername = s.currentUser?.username || ''
+   137→          const myDisplayName = s.currentUser?.display_name || ''
+   138→          const content = (normalized.content || '').toLowerCase()
+   139→          const isMention =
+   140→            content.includes(`@${myUsername.toLowerCase()}`) ||
+   141→            content.includes(`@${myDisplayName.toLowerCase()}`) ||
+   142→            (normalized.reply_to_id && s.replyTo?.id === normalized.reply_to_id)
+   143→
+   144→          if (isMention) {
+   145→            s.incrementMention(channelId)
+   146→          } else {
+   147→            s.incrementUnread(channelId)
+   148→          }
+   149→          playNotificationSound()
+   150→
+   151→          // ─── Toast notification ───────────────────────────────────
+   152→          const senderName = normalized.sender?.display_name || normalized.sender?.username || 'Someone'
+   153→          const preview = (normalized.content || '').length > 100
+   154→            ? (normalized.content || '').slice(0, 100) + '…'
+   155→            : (normalized.content || '')
+   156→          toast.info(senderName, {
+   157→            description: preview,
+   158→            duration: 3000,
+   159→          })
+   160→        }
+   161→      }
+   162→
+   163→      useAppStore.getState().addMessage(normalized)
+   164→    }
+   165→
+   166→    const onTyping = (data: { channelId: string; userId: string; isTyping: boolean }) => {
+   167→      const s = useAppStore.getState()
+   168→      if (data.isTyping) s.addTypingUser(data.channelId, data.userId)
+   169→      else s.removeTypingUser(data.channelId, data.userId)
+   170→    }
+   171→
+   172→    const onPresenceUpdate = (data: { userId: string; status: string }) => {
+   173→      const s = useAppStore.getState()
+   174→      if (data.status === 'online') s.addUserOnline(data.userId)
+   175→      else s.removeUserOnline(data.userId)
+   176→    }
+   177→
+   178→    const onVCJoin = (data: any) => {
+   179→      // Server sends flat: { userId, username, displayName, avatarUrl, gcId, timestamp }
+   180→      // Build a VoiceSession-like object
+   181→      const session = {
+   182→        id: `vc-${data.userId}-${Date.now()}`,
+   183→        gc_id: data.gcId,
+   184→        user_id: data.userId,
+   185→        joined_at: data.timestamp || new Date().toISOString(),
+   186→        user: {
+   187→          id: data.userId,
+   188→          username: data.username,
+   189→          display_name: data.displayName,
+   190→          avatar_url: data.avatarUrl,
+   191→        },
+   192→      }
+   193→      useAppStore.getState().addVoiceParticipant(data.gcId, session)
+   194→    }
+   195→
+   196→    const onVCLeave = (data: { gcId: string; userId: string }) =>
+   197→      useAppStore.getState().removeVoiceParticipant(data.gcId, data.userId)
+   198→
+   199→    const onVCParticipants = (data: any) => {
+   200→      const sessions = (data.participants || []).map((p: any) => ({
+   201→        id: `vc-${p.userId}-${Date.now()}`,
+   202→        gc_id: data.gcId,
+   203→        user_id: p.userId,
+   204→        joined_at: p.joinedAt || new Date().toISOString(),
+   205→        user: {
+   206→          id: p.userId,
+   207→          username: p.username,
+   208→          display_name: p.displayName,
+   209→          avatar_url: p.avatarUrl,
+   210→        },
+   211→      }))
+   212→      useAppStore.getState().setVoiceParticipants(data.gcId, sessions)
+   213→    }
+   214→
+   215→    const onMemberAdded = (data: any) => {
+   216→      // Server sends flat: { gcId, userId, role, user, gc, timestamp }
+   217→      // Build a GCMember-like object with snake_case fields
+   218→      const member = {
+   219→        gc_id: data.gcId,
+   220→        user_id: data.userId,
+   221→        role: data.role || 'member',
+   222→        user: data.user ? {
+   223→          id: data.user.id,
+   224→          username: data.user.username,
+   225→          display_name: data.user.displayName ?? data.user.display_name,
+   226→          avatar_url: data.user.avatarUrl ?? data.user.avatar_url,
+   227→          status: data.user.status || 'offline',
+   228→        } : null,
+   229→        joined_at: data.timestamp || new Date().toISOString(),
+   230→      }
+   231→      useAppStore.getState().addGCMember(data.gcId, member)
+   232→
+   233→      // If the added member is the current user AND we got GC data, add GC to sidebar
+   234→      const state = useAppStore.getState()
+   235→      if (data.userId === state.currentUser?.id && data.gc) {
+   236→        // Check if we already have this GC (avoid duplicates)
+   237→        if (!state.userGCs.some(g => g.id === data.gcId)) {
+   238→          useAppStore.getState().addGC(data.gc)
+   239→        }
+   240→        // Also load existing members for this GC
+   241→        fetch(`/api/gcs/${data.gcId}/members`).then(r => {
+   242→          if (r.ok) r.json().then(members => {
+   243→            useAppStore.getState().setGCMembers(data.gcId, members)
+   244→          })
+   245→        }).catch(() => {})
+   246→      }
+   247→    }
+   248→
+   249→    const onMemberRemoved = (data: { gcId: string; userId: string }) =>
+   250→      useAppStore.getState().removeGCMember(data.gcId, data.userId)
+   251→
+   252→    const onDMConversationNew = (data: any) => {
+   253→      // Another user started a DM with us — add it to our DM list in real-time
+   254→      const s = useAppStore.getState()
+   255→      if (!s.currentUser) return
+   256→      // Don't add if we already have this conversation
+   257→      if (s.dmConversations.some(c => c.id === data.id)) return
+   258→      // Build the conversation object the store expects
+   259→      const otherUserId = data.user1_id === s.currentUser.id ? data.user2_id : data.user1_id
+   260→      useAppStore.getState().addDMConversation({
+   261→        id: data.id,
+   262→        user1_id: data.user1_id,
+   263→        user2_id: data.user2_id,
+   264→        other_user: data.other_user ? {
+   265→          id: data.other_user.id,
+   266→          username: data.other_user.username,
+   267→          display_name: data.other_user.displayName ?? data.other_user.display_name,
+   268→          avatar_url: data.other_user.avatarUrl ?? data.other_user.avatar_url,
+   269→          status: data.other_user.status || 'offline',
+   270→        } : null,
+   271→        created_at: data.timestamp,
+   272→        updated_at: data.timestamp,
+   273→        last_message_at: null,
+   274→      })
+   275→    }
+   276→
+   277→    const onMemberBanned = (data: { gcId: string; userId: string }) =>
+   278→      useAppStore.getState().removeGCMember(data.gcId, data.userId)
+   279→
+   280→    const onGCUpdated = (data: any) =>
+   281→      useAppStore.getState().updateGC(data.id, data)
+   282→
+   283→    const onFriendRequestReceived = (data: any) => {
+   284→      const s = useAppStore.getState()
+   285→      s.setPendingRequests([...s.pendingFriendRequests, data])
+   286→    }
+   287→
+   288→    const onFriendAccepted = (data: any) => {
+   289→      const s = useAppStore.getState()
+   290→      s.addFriend(data.friend)
+   291→      s.setPendingRequests(s.pendingFriendRequests.filter((r: any) => r.id !== data.requestId))
+   292→    }
+   293→
+   294→    const onFriendDeclined = (data: any) => {
+   295→      const s = useAppStore.getState()
+   296→      s.setPendingRequests(s.pendingFriendRequests.filter((r: any) => r.id !== data.requestId))
+   297→    }
+   298→
+   299→    const onEmojiAdded = (data: any) => {
+   300→      // Server sends a flat object: { id, gcId, name, imageUrl, uploadedBy, createdAt, timestamp }
+   301→      const normalized = {
+   302→        id: data.id,
+   303→        name: data.name,
+   304→        image_url: data.imageUrl ?? data.image_url,
+   305→        uploaded_by: data.uploadedBy ?? data.uploaded_by,
+   306→        gc_id: data.gcId ?? data.gc_id,
+   307→        created_at: data.createdAt ?? data.created_at,
+   308→      }
+   309→      useAppStore.getState().addCustomEmoji(data.gcId, normalized)
+   310→    }
+   311→
+   312→    const onEmojiRemoved = (data: { emojiId: string; gcId: string }) =>
+   313→      useAppStore.getState().removeCustomEmoji(data.emojiId)
+   314→
+   315→    const onUserProfileUpdate = (data: any) => {
+   316→      if (data.userId === useAppStore.getState().currentUser?.id) return // skip self
+   317→      const updateData: any = {}
+   318→      if (data.displayName) updateData.display_name = data.displayName
+   319→      if (data.bio !== undefined) updateData.bio = data.bio
+   320→      if (data.customStatus !== undefined) updateData.custom_status = data.customStatus
+   321→      if (data.avatarUrl !== undefined) updateData.avatar_url = data.avatarUrl
+   322→      if (data.bannerUrl !== undefined) updateData.banner_url = data.bannerUrl
+   323→      useAppStore.getState().updateRemoteUser(data.userId, updateData)
+   324→    }
+   325→
+   326→    const onAuthSuccess = (data: any) => {
+   327→      if (data.onlineUsers) useAppStore.getState().setOnlineUsers(data.onlineUsers)
+   328→    }
+   329→
+   330→    const onCallIncoming = (data: any) => {
+   331→      useAppStore.getState().setIncomingCall({
+   332→        dmConversationId: data.dmConversationId,
+   333→        callerId: data.callerId,
+   334→        callerName: data.callerName,
+   335→        callerAvatar: data.callerAvatar,
+   336→      })
+   337→    }
+   338→
+   339→    const onCallConnected = (data: any) => {
+   340→      const s = useAppStore.getState()
+   341→      // Preserve isCaller: the original caller already has isCaller=true in their activeCall
+   342→      // The callee doesn't have activeCall set yet (or has it from handleAccept without isCaller)
+   343→      const existingCall = s.activeCall
+   344→      s.setActiveCall({
+   345→        dmConversationId: data.dmConversationId,
+   346→        callerId: data.otherUserId,
+   347→        callerName: data.otherName,
+   348→        callerAvatar: data.otherAvatar,
+   349→        status: 'connected',
+   350→        startedAt: data.startedAt,
+   351→        isCaller: existingCall?.isCaller ?? false,
+   352→      })
+   353→      s.setIncomingCall(null)
+   354→    }
+   355→
+   356→    const onCallEnded = (data: any) => {
+   357→      const s = useAppStore.getState()
+   358→      s.setActiveCall(null)
+   359→      s.setIncomingCall(null)
+   360→      s.setCallMuted(false)
+   361→      s.setCallDeafened(false)
+   362→    }
+   363→
+   364→    const onMessageDeleted = (data: any) => {
+   365→      const channelId = data.gcId || data.dmConversationId
+   366→      if (channelId) {
+   367→        const s = useAppStore.getState()
+   368→        const msgs = s.gcMessages[channelId] || s.dmMessages[channelId] || []
+   369→        // Skip if already removed locally (avoids unnecessary re-render)
+   370→        if (!msgs.some((m) => m.id === data.messageId)) return
+   371→        s.removeMessage(data.messageId, channelId)
+   372→      }
+   373→    }
+   374→
+   375→    const onMessageEdited = (data: any) => {
+   376→      const channelId = data.gcId || data.dmConversationId
+   377→      if (channelId) {
+   378→        const s = useAppStore.getState()
+   379→        const msgs = s.gcMessages[channelId] || s.dmMessages[channelId] || []
+   380→        const existing = msgs.find((m) => m.id === data.messageId)
+   381→        // Skip if already updated locally (avoids double re-render / black flash)
+   382→        if (existing && existing.content === data.newContent && existing.edited_at) return
+   383→        s.updateMessageContent(data.messageId, channelId, data.newContent, data.editedAt)
+   384→      }
+   385→    }
+   386→
+   387→    // Register all listeners
+   388→    onSocketEvent('message:new', onNewMessage)
+   389→    onSocketEvent('message:typing', onTyping)
+   390→    onSocketEvent('presence:update', onPresenceUpdate)
+   391→    onSocketEvent('vc:user-joined', onVCJoin)
+   392→    onSocketEvent('vc:user-left', onVCLeave)
+   393→    onSocketEvent('vc:participants', onVCParticipants)
+   394→    onSocketEvent('gc:member:added', onMemberAdded)
+   395→    onSocketEvent('gc:member:removed', onMemberRemoved)
+   396→    onSocketEvent('gc:member:banned', onMemberBanned)
+   397→    onSocketEvent('gc:updated', onGCUpdated)
+   398→    onSocketEvent('dm:conversation:new', onDMConversationNew)
+   399→    onSocketEvent('friend:request:received', onFriendRequestReceived)
+   400→    onSocketEvent('friend:accepted', onFriendAccepted)
+   401→    onSocketEvent('friend:declined', onFriendDeclined)
+   402→    onSocketEvent('emoji:added', onEmojiAdded)
+   403→    onSocketEvent('emoji:removed', onEmojiRemoved)
+   404→    onSocketEvent('auth:success', onAuthSuccess)
+   405→    onSocketEvent('dm:call:incoming', onCallIncoming)
+   406→    onSocketEvent('dm:call:connected', onCallConnected)
+   407→    onSocketEvent('dm:call:ended', onCallEnded)
+   408→    onSocketEvent('message:deleted', onMessageDeleted)
+   409→    onSocketEvent('message:edited', onMessageEdited)
+   410→    onSocketEvent('user:profile:update', onUserProfileUpdate)
+   411→
+   412→    return () => {
+   413→      offSocketEvent('message:new', onNewMessage)
+   414→      offSocketEvent('message:typing', onTyping)
+   415→      offSocketEvent('presence:update', onPresenceUpdate)
+   416→      offSocketEvent('vc:user-joined', onVCJoin)
+   417→      offSocketEvent('vc:user-left', onVCLeave)
+   418→      offSocketEvent('vc:participants', onVCParticipants)
+   419→      offSocketEvent('gc:member:added', onMemberAdded)
+   420→      offSocketEvent('gc:member:removed', onMemberRemoved)
+   421→      offSocketEvent('gc:member:banned', onMemberBanned)
+   422→      offSocketEvent('gc:updated', onGCUpdated)
+   423→      offSocketEvent('dm:conversation:new', onDMConversationNew)
+   424→      offSocketEvent('friend:request:received', onFriendRequestReceived)
+   425→      offSocketEvent('friend:accepted', onFriendAccepted)
+   426→      offSocketEvent('friend:declined', onFriendDeclined)
+   427→      offSocketEvent('emoji:added', onEmojiAdded)
+   428→      offSocketEvent('emoji:removed', onEmojiRemoved)
+   429→      offSocketEvent('auth:success', onAuthSuccess)
+   430→      offSocketEvent('dm:call:incoming', onCallIncoming)
+   431→      offSocketEvent('dm:call:connected', onCallConnected)
+   432→      offSocketEvent('dm:call:ended', onCallEnded)
+   433→      offSocketEvent('message:deleted', onMessageDeleted)
+   434→      offSocketEvent('message:edited', onMessageEdited)
+   435→      offSocketEvent('user:profile:update', onUserProfileUpdate)
+   436→    }
+   437→  }, [currentUser?.id, initializeData])
+   438→
+   439→  // ─── Cleanup on unmount ─────────────────────────────────────────────────
+   440→  useEffect(() => {
+   441→    return () => { disconnectSocket() }
+   442→  }, [])
+   443→
+   444→  // ─── Handle GC settings view — just open the dialog, no activeView change needed
+   445→  // Sidebar now calls onOpenGCSettings prop directly, avoiding the 2-step flash
+   446→
+   447→  // ─── Stable action helpers (never change between renders) ──────────────
+   448→  const openGCSettings = useCallback(() => setGCSettingsOpen(true), [])
+   449→  const openAddMember = useCallback(() => setAddMemberOpen(true), [])
+   450→  const toggleSidebar = useCallback(() => useAppStore.getState().toggleSidebar(), [])
+   451→  const toggleRightPanel = useCallback(() => useAppStore.getState().toggleRightPanel(), [])
+   452→  const setSidebarOpen = useCallback((v: boolean) => useAppStore.getState().setSidebarOpen(v), [])
+   453→  const setRPOpen = useCallback((v: boolean) => useAppStore.getState().setRightPanelOpen(v), [])
+   454→
+   455→  // ─── Auth guard ─────────────────────────────────────────────────────────
+   456→  if (!isAuthenticated || !currentUser) {
+   457→    return <LoginView />
+   458→  }
+   459→
+   460→  // ─── Derived values ────────────────────────────────────────────────────
+   461→  const showChat = activeView === 'chat' && (selectedGCId || selectedDMConversationId)
+   462→  const showWelcome = activeView === 'chat' && !selectedGCId && !selectedDMConversationId
+   463→  const showFriends = activeView === 'friends'
+   464→
+   465→  // ─── Render ─────────────────────────────────────────────────────────────
+   466→  return (
+   467→    <div className="flex h-screen w-full overflow-hidden bg-background">
+   468→      {/* ── Mobile Header Bar ─────────────────────────────────────────────── */}
+   469→      {isMobile && (
+   470→        <div className="fixed top-0 left-0 right-0 z-50 flex items-center h-12 px-3 bg-discord-darkest border-b border-border">
+   471→          <Button
+   472→            variant="ghost"
+   473→            size="icon"
+   474→            className="h-8 w-8 text-muted-foreground"
+   475→            onClick={toggleSidebar}
+   476→          >
+   477→            {sidebarOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+   478→          </Button>
+   479→          <div className="flex-1 text-center">
+   480→            <span className="font-semibold text-sm text-foreground">
+   481→              {selectedGCId
+   482→                ? userGCs.find((g) => g.id === selectedGCId)?.name || 'UREEDXDCHAT'
+   483→                : selectedDMConversationId
+   484→                  ? 'Direct Message'
+   485→                  : 'UREEDXDCHAT'}
+   486→            </span>
+   487→          </div>
+   488→          <div className="flex items-center gap-1">
+   489→            {selectedGCId && (
+   490→              <Button
+   491→                variant="ghost"
+   492→                size="icon"
+   493→                className="h-8 w-8 text-muted-foreground"
+   494→                onClick={toggleRightPanel}
+   495→              >
+   496→                <Users className="h-5 w-5" />
+   497→              </Button>
+   498→            )}
+   499→            <Button
+   500→              variant="ghost"
+   501→              size="icon"
+   502→              className="h-8 w-8 text-muted-foreground"
+   503→              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+   504→            >
+   505→              {mounted && (theme === 'dark' ? (
+   506→                <Sun className="h-4 w-4" />
+   507→              ) : (
+   508→                <Moon className="h-4 w-4" />
+   509→              ))}
+   510→            </Button>
+   511→          </div>
+   512→        </div>
+   513→      )}
+   514→
+   515→      {/* ── Sidebar ───────────────────────────────────────────────────────── */}
+   516→      <MemoizedSidebar
+   517→        onOpenProfileSettings={() => setProfileOpen(true)}
+   518→        onCreateGC={() => setCreateGCOpen(true)}
+   519→        onStartDM={() => setStartDMOpen(true)}
+   520→      />
+   521→
+   522→      {/* ── Main Content Area ─────────────────────────────────────────────── */}
+   523→      <main className={`flex-1 flex flex-col min-w-0 ${isMobile ? 'pt-12' : ''}`}>
+   524→        {showChat && <MemoizedChatView onOpenGCSettings={openGCSettings} onAddMember={openAddMember} />}
+   525→
+   526→        {showWelcome && (
+   527→          <div className="flex-1 flex flex-col items-center justify-center gap-4 p-6">
+   528→            <div className="w-20 h-20 rounded-full bg-primary/20 flex items-center justify-center">
+   529→              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-primary">
+   530→                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+   531→              </svg>
+   532→            </div>
+   533→            <h1 className="text-2xl font-bold">Welcome to UREEDXDCHAT!</h1>
+   534→            <p className="text-muted-foreground text-center max-w-md">
+   535→              Select a group chat or start a direct message to begin chatting.
+   536→              Create a new group or find friends to get started.
+   537→            </p>
+   538→            <div className="flex gap-3 mt-2">
+   539→              <Button onClick={() => setCreateGCOpen(true)} className="gap-2">
+   540→                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+   541→                  <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+   542→                  <circle cx="9" cy="7" r="4" />
+   543→                  <line x1="19" y1="8" x2="19" y2="14" />
+   544→                  <line x1="22" y1="11" x2="16" y2="11" />
+   545→                </svg>
+   546→                Create Group
+   547→              </Button>
+   548→              <Button variant="outline" onClick={() => setStartDMOpen(true)} className="gap-2">
+   549→                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+   550→                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+   551→                </svg>
+   552→                New Message
+   553→              </Button>
+   554→            </div>
+   555→          </div>
+   556→        )}
+   557→
+   558→        {showFriends && <MemoizedFriendsView />}
+   559→      </main>
+   560→
+   561→      {/* ── Right Panel: Members (desktop only) ──────────────────────────── */}
+   562→      {!isMobile && selectedGCId && (
+   563→        <div className={`
+   564→          w-60 border-l border-border bg-card flex-shrink-0
+   565→          transition-all duration-200
+   566→          ${rightPanelOpen ? 'translate-x-0 opacity-100' : '-translate-x-full opacity-0 absolute'}
+   567→          lg:translate-x-0 lg:opacity-100
+   568→        `}>
+   569→          <MemoizedMemberPanel />
+   570→        </div>
+   571→      )}
+   572→
+   573→      {/* ── Mobile Member Panel (overlay) ────────────────────────────────── */}
+   574→      {isMobile && selectedGCId && rightPanelOpen && (
+   575→        <div
+   576→          className="fixed inset-0 z-40 bg-black/50 lg:hidden"
+   577→          onClick={() => setRPOpen(false)}
+   578→        >
+   579→          <div
+   580→            className="absolute right-0 top-12 bottom-0 w-72 bg-card border-l border-border overflow-y-auto"
+   581→            onClick={(e) => e.stopPropagation()}
+   582→          >
+   583→            <div className="flex items-center justify-between p-3 border-b border-border">
+   584→              <span className="font-semibold text-sm">Members</span>
+   585→              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setRPOpen(false)}>
+   586→                <X className="h-4 w-4" />
+   587→              </Button>
+   588→            </div>
+   589→            <MemoizedMemberPanel />
+   590→          </div>
+   591→        </div>
+   592→      )}
+   593→
+   594→      {/* ── Dialogs ──────────────────────────────────────────────────────── */}
+   595→      <CreateGCDialog open={createGCOpen} onOpenChange={setCreateGCOpen} />
+   596→      <StartDMDialog open={startDMOpen} onOpenChange={setStartDMOpen} />
+   597→      <ProfileDialog open={profileOpen} onOpenChange={setProfileOpen} userId={currentUser.id} />
+   598→
+   599→      {/* ── DM Call UI (overlays) ──────────────────────────────────────── */}
+   600→      <DMCallUI />
+   601→
+   602→      {selectedGCId && (
+   603→        <>
+   604→          <GCSettingsDialog open={gcSettingsOpen} onOpenChange={setGCSettingsOpen} gcId={selectedGCId} />
+   605→          <AddMemberDialog open={addMemberOpen} onOpenChange={setAddMemberOpen} gcId={selectedGCId} />
+   606→        </>
+   607→      )}
+   608→    </div>
+   609→  )
+   610→}
+   611→
+   612→// ─── Memoized wrappers to prevent cascading re-renders ────────────────────────
+   613→
+   614→const MemoizedSidebar = memo(Sidebar)
+   615→const MemoizedChatView = memo(ChatView)
+   616→const MemoizedMemberPanel = memo(MemberPanel)
+   617→const MemoizedFriendsView = memo(FriendsView)

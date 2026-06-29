@@ -1,9 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -14,19 +8,158 @@ datasource db {
 }
 
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  name      String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id           String   @id @default(cuid())
+  username     String   @unique
+  displayName  String
+  email        String   @unique
+  avatarUrl    String?
+  bannerUrl    String?
+  bio          String   @default("")
+  status       String   @default("offline")
+  customStatus String?
+  lastSeen     DateTime @default(now())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  ownedGCs       GroupChat[]      @relation("GCOwner")
+  gcMemberships  GCMember[]
+  sentMessages   Message[]        @relation("MessageSender")
+  sentRequests   FriendRequest[]  @relation("SentRequest")
+  receivedRequests FriendRequest[] @relation("ReceivedRequest")
+  blockedUsers   Block[]          @relation("Blocker")
+  blockedBy      Block[]          @relation("Blocked")
+  uploadedEmojis  CustomEmoji[]
+
+  dmConversations DMConversation[] @relation("User1Conversations")
+  dmConversations2 DMConversation[] @relation("User2Conversations")
 }
 
-model Post {
+model GroupChat {
+  id          String   @id @default(cuid())
+  name        String
+  iconUrl     String?
+  description String   @default("")
+  ownerId     String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  owner       User        @relation("GCOwner", fields: [ownerId], references: [id])
+  members     GCMember[]
+  messages    Message[]
+  emojis      CustomEmoji[]
+  voiceSessions VoiceSession[]
+  bans        GCBan[]
+}
+
+model GCMember {
+  id          String   @id @default(cuid())
+  gcId        String
+  userId      String
+  role        String   @default("member")
+  canKick     Boolean  @default(false)
+  canBan      Boolean  @default(false)
+  canAddMembers Boolean @default(false)
+  canManageEmojis Boolean @default(false)
+  joinedAt    DateTime @default(now())
+
+  gc          GroupChat @relation(fields: [gcId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([gcId, userId])
+}
+
+model Message {
+  id            String   @id @default(cuid())
+  gcId          String?
+  dmConversationId String?
+  senderId      String
+  content       String
+  type          String   @default("text")
+  attachmentUrl String?
+  replyToId     String?
+  createdAt     DateTime @default(now())
+
+  gc            GroupChat?      @relation(fields: [gcId], references: [id], onDelete: Cascade)
+  sender        User            @relation("MessageSender", fields: [senderId], references: [id])
+  dmConversation DMConversation? @relation(fields: [dmConversationId], references: [id], onDelete: Cascade)
+  replyTo       Message?        @relation("MessageReplies", fields: [replyToId], references: [id])
+  replies       Message[]       @relation("MessageReplies")
+
+  @@index([gcId, createdAt])
+  @@index([dmConversationId, createdAt])
+}
+
+model DMConversation {
   id        String   @id @default(cuid())
-  title     String
-  content   String?
-  published Boolean  @default(false)
-  authorId  String
+  user1Id   String
+  user2Id   String
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+
+  user1     User      @relation("User1Conversations", fields: [user1Id], references: [id])
+  user2     User      @relation("User2Conversations", fields: [user2Id], references: [id])
+  messages  Message[]
+
+  @@unique([user1Id, user2Id])
+}
+
+model FriendRequest {
+  id        String   @id @default(cuid())
+  senderId  String
+  receiverId String
+  status    String   @default("pending")
+  createdAt DateTime @default(now())
+
+  sender    User     @relation("SentRequest", fields: [senderId], references: [id], onDelete: Cascade)
+  receiver  User     @relation("ReceivedRequest", fields: [receiverId], references: [id], onDelete: Cascade)
+
+  @@unique([senderId, receiverId])
+}
+
+model Block {
+  id        String   @id @default(cuid())
+  blockerId String
+  blockedId String
+  createdAt DateTime @default(now())
+
+  blocker   User     @relation("Blocker", fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked   User     @relation("Blocked", fields: [blockedId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerId, blockedId])
+}
+
+model CustomEmoji {
+  id        String   @id @default(cuid())
+  gcId      String
+  name      String
+  imageUrl  String
+  uploadedBy String
+  createdAt DateTime @default(now())
+
+  gc        GroupChat @relation(fields: [gcId], references: [id], onDelete: Cascade)
+  uploader  User      @relation(fields: [uploadedBy], references: [id])
+
+  @@unique([gcId, name])
+}
+
+model VoiceSession {
+  id        String   @id @default(cuid())
+  gcId      String
+  userId    String
+  joinedAt  DateTime @default(now())
+
+  gc        GroupChat @relation(fields: [gcId], references: [id], onDelete: Cascade)
+
+  @@index([gcId])
+}
+
+model GCBan {
+  id        String   @id @default(cuid())
+  gcId      String
+  userId    String
+  reason    String?
+  createdAt DateTime @default(now())
+
+  gc        GroupChat @relation(fields: [gcId], references: [id], onDelete: Cascade)
+
+  @@unique([gcId, userId])
 }
