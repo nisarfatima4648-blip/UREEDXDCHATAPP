@@ -5,7 +5,8 @@ import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Slider } from '@/components/ui/slider'
 import { Separator } from '@/components/ui/separator'
-import { Mic, MicOff, Volume2, VolumeX, Upload, Play, Square, Headphones, AlertTriangle } from 'lucide-react'
+import { Mic, MicOff, Volume2, VolumeX, Upload, Play, Square, Headphones, AlertTriangle, AudioWaveform } from 'lucide-react'
+import { Switch } from '@/components/ui/switch'
 import { cn } from '@/lib/utils'
 
 // ─── Audio Settings stored in localStorage ─────────────────────────────────
@@ -17,6 +18,7 @@ interface AudioSettingsState {
   outputVolume: number
   messageNotifSound: string | null // base64 or 'default'
   callNotifSound: string | null
+  noiseSuppression: boolean // Krisp-style noise gate + high-pass + compressor
 }
 
 function loadSettings(): AudioSettingsState {
@@ -31,6 +33,7 @@ function loadSettings(): AudioSettingsState {
     outputVolume: 100,
     messageNotifSound: null,
     callNotifSound: null,
+    noiseSuppression: true, // enabled by default
   }
 }
 
@@ -390,6 +393,37 @@ export default function AudioSettings() {
           step={1}
           className="py-2"
         />
+      </div>
+
+      <Separator className="bg-[#202225]" />
+
+      {/* ── Noise Suppression (Krisp-style) ──────────────────────────── */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <AudioWaveform className="size-4 text-emerald-400" />
+            <Label className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
+              Noise Suppression
+            </Label>
+          </div>
+          <Switch
+            checked={settings.noiseSuppression}
+            onCheckedChange={(v) => updateSetting('noiseSuppression', v)}
+          />
+        </div>
+        <p className="text-xs text-zinc-500 leading-relaxed">
+          {settings.noiseSuppression
+            ? '✓ Active — background noise (fans, keyboard, traffic) is filtered out using a noise gate, high-pass filter, and compressor. Your voice comes through crystal clear.'
+            : 'Off — raw microphone audio is sent without processing. Enable to filter out background noise.'}
+        </p>
+        {settings.noiseSuppression && (
+          <div className="flex items-center gap-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-3 py-2">
+            <div className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
+            <p className="text-xs text-emerald-300">
+              Noise gate · 200 Hz high-pass filter · 3:1 compressor — applied to all voice calls
+            </p>
+          </div>
+        )}
       </div>
 
       <Separator className="bg-[#202225]" />

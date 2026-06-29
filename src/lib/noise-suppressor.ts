@@ -242,6 +242,12 @@ export class NoiseSuppressor {
 
     const ctx = new NativeAudioCtx();
 
+    // Resume the AudioContext immediately — autoplay policy may start it in
+    // "suspended" state, which would mean no audio flows through the pipeline.
+    if (ctx.state === 'suspended') {
+      try { await ctx.resume(); } catch { /* ignore */ }
+    }
+
     // ── 1. Create Blob URL for the inline AudioWorklet processor ──────────
     const blob = new Blob([NOISE_GATE_WORKLET_CODE], { type: 'application/javascript' });
     const blobURL = URL.createObjectURL(blob);
@@ -392,5 +398,59 @@ export class NoiseSuppressor {
     if (this._destroyed) {
       throw new Error('NoiseSuppressor: instance has been destroyed.');
     }
+  }
+}
+
+// ─── Module-level helpers ───────────────────────────────────────────────────
+
+/**
+ * Reads the noise suppression toggle from localStorage.
+ * Defaults to `true` (enabled) if not explicitly set to `false`.
+ */
+export function isNoiseSuppressionEnabled(): boolean {
+  try {
+    const raw = localStorage.getItem('ureedxdchat_audio_settings')
+    if (raw) {
+      const s = JSON.parse(raw)
+      return s.noiseSuppression !== false
+    }
+  } catch { /* ignore */ }
+  return true
+}
+
+/**
+ * Convenience wrapper: creates a NoiseSuppressor for the given raw mic stream
+ * and returns both the suppressor instance and the processed MediaStream.
+ *
+ * If noise suppression is disabled in settings OR the NoiseSuppressor fails
+ * to initialise (e.g. AudioWorklet not supported), falls back to returning
+ * the raw stream with a `null` suppressor — the caller should use the stream
+ * either way.
+ *
+ * @param rawStream - The MediaStream from getUserMedia()
+ * @returns `{ suppressor, stream }` — use `stream` for WebRTC, call
+ *          `suppressor?.destroy()` when done.
+ */
+export async function createProcessedStream(
+  rawStream: MediaStream,
+): Promise<{ suppressor: NoiseSuppressor | null; stream: MediaStream }> {
+  if (!isNoiseSuppressionEnabled()) {
+    return { suppressor: null, stream: rawStream }
+  }
+
+  try {
+    const suppressor = await NoiseSuppressor.create(rawStream)
+    const processed = suppressor.processedStream
+    // Verify the processed stream actually has audio tracks
+    if (processed.getAudioTracks().length === 0) {
+      console.warn('[NoiseSuppressor] Processed stream has no audio tracks — falling back to raw stream')
+      suppressor.destroy()
+      return { suppressor: null, stream: rawStream }
+    }
+    console.log('[NoiseSuppressor] Noise suppression enabled — processed stream ready, tracks:', processed.getAudioTracks().length)
+    return { suppressor, stream: processed }
+  } catch (err) {
+    console.warn('[NoiseSuppressor] Failed to create noise suppressor, using raw stream:', err)
+    return { suppressor: null, stream: rawStream }
   }
 }

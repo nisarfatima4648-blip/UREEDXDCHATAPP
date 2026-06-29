@@ -5,9 +5,10 @@ import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
-import { Phone, PhoneOff, Volume2, Mic, MicOff, Loader2 } from 'lucide-react'
+import { Phone, PhoneOff, Volume2, Mic, MicOff, Loader2, AudioWaveform } from 'lucide-react'
 import { useAppStore } from '@/lib/store'
 import { joinVC, leaveVC, sendVCSignal, onSocketEvent, offSocketEvent } from '@/lib/socket'
+import { NoiseSuppressor, createProcessedStream, isNoiseSuppressionEnabled } from '@/lib/noise-suppressor'
 import { cn } from '@/lib/utils'
 import type { VoiceSession } from '@/lib/database'
 
@@ -15,10 +16,30 @@ import type { VoiceSession } from '@/lib/database'
 
 const ICE_CONFIG: RTCConfiguration = {
   iceServers: [
+    // STUN servers for candidate gathering
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
+    // Free public TURN servers (OpenRelay) — relay traffic when direct P2P fails.
+    // These help in restricted networks / NATs where host & reflexive candidates
+    // can't connect.
+    {
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
   ],
+  iceTransportPolicy: 'all',
 }
 const SPEAKING_THRESHOLD = 10
 
@@ -178,9 +199,14 @@ export function VoiceChannel({ gcId }: VoiceChannelProps) {
   const [isMuted, setIsMuted] = useState(false)
   const [localSpeaking, setLocalSpeaking] = useState(false)
   const [remoteSpeakingSet, setRemoteSpeakingSet] = useState<Set<string>>(new Set())
+  const [noiseSuppressionOn, setNoiseSuppressionOn] = useState(isNoiseSuppressionEnabled())
+  // Per-peer WebRTC connection state for UI feedback
+  const [peerConnectionStates, setPeerConnectionStates] = useState<Record<string, string>>({})
 
   // ─── WebRTC Refs ───────────────────────────────────────────────────────────
   const localStreamRef = useRef<MediaStream | null>(null)
+  const rawStreamRef = useRef<MediaStream | null>(null) // original mic stream (before noise processing)
+  const noiseSuppressorRef = useRef<NoiseSuppressor | null>(null)
   const peersRef = useRef<Map<string, RTCPeerConnection>>(new Map())
   const audioCtxRef = useRef<AudioContext | null>(null)
   const localAnalyserRef = useRef<AnalyserNode | null>(null)
@@ -206,10 +232,21 @@ export function VoiceChannel({ gcId }: VoiceChannelProps) {
     peersRef.current.clear()
     offeredPeersRef.current.clear()
 
-    // Stop local stream tracks
+    // Destroy the noise suppressor (closes its AudioContext + revokes blob URL)
+    if (noiseSuppressorRef.current) {
+      noiseSuppressorRef.current.destroy()
+      noiseSuppressorRef.current = null
+    }
+
+    // Stop local stream tracks (the processed stream's tracks)
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((t) => t.stop())
       localStreamRef.current = null
+    }
+    // Stop the RAW mic stream tracks too (they're separate from the processed stream)
+    if (rawStreamRef.current) {
+      rawStreamRef.current.getTracks().forEach((t) => t.stop())
+      rawStreamRef.current = null
     }
 
     // Close remote audio elements
@@ -222,7 +259,7 @@ export function VoiceChannel({ gcId }: VoiceChannelProps) {
     // Close remote analysers
     remoteAnalysersRef.current.clear()
 
-    // Close audio context
+    // Close audio context (for speaking detection — separate from noise suppressor's)
     if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
       audioCtxRef.current.close().catch(() => {})
       audioCtxRef.current = null
@@ -232,6 +269,7 @@ export function VoiceChannel({ gcId }: VoiceChannelProps) {
     setLocalSpeaking(false)
     setRemoteSpeakingSet(new Set())
     setIsMuted(false)
+    setPeerConnectionStates({})
   }, [])
 
   // ─── Create a peer connection to a specific user ──────────────────────────
@@ -331,6 +369,7 @@ export function VoiceChannel({ gcId }: VoiceChannelProps) {
       // Handle connection state
       pc.onconnectionstatechange = () => {
         console.log('[VC] Peer', targetUserId, 'connectionState:', pc.connectionState, 'iceState:', pc.iceConnectionState)
+        setPeerConnectionStates((prev) => ({ ...prev, [targetUserId]: pc.connectionState }))
         if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
           const analyser = remoteAnalysersRef.current.get(targetUserId)
           if (analyser) {
@@ -347,6 +386,11 @@ export function VoiceChannel({ gcId }: VoiceChannelProps) {
           setRemoteSpeakingSet((prev) => {
             const next = new Set(prev)
             next.delete(targetUserId)
+            return next
+          })
+          setPeerConnectionStates((prev) => {
+            const next = { ...prev }
+            delete next[targetUserId]
             return next
           })
         }
@@ -543,20 +587,34 @@ export function VoiceChannel({ gcId }: VoiceChannelProps) {
       setConnectionStatus('connecting')
 
       try {
-        // Capture microphone
-        const stream = await navigator.mediaDevices.getUserMedia(getAudioConstraints())
+        // Capture microphone (raw stream)
+        const rawStream = await navigator.mediaDevices.getUserMedia(getAudioConstraints())
         if (aborted) {
-          stream.getTracks().forEach((t) => t.stop())
+          rawStream.getTracks().forEach((t) => t.stop())
           return
         }
-        localStreamRef.current = stream
-        console.log('[VC] Got local stream, audio tracks:', stream.getAudioTracks().length, stream.getAudioTracks().map(t => `enabled=${t.enabled} ready=${t.readyState} label=${t.label}`))
+        rawStreamRef.current = rawStream
+        console.log('[VC] Got raw mic stream, audio tracks:', rawStream.getAudioTracks().length, rawStream.getAudioTracks().map(t => `enabled=${t.enabled} ready=${t.readyState} label=${t.label}`))
 
-        // Set up local speaking detection
+        // ── Noise suppression pipeline ──────────────────────────────────
+        // Route the raw mic through the NoiseSuppressor (AudioWorklet noise gate
+        // + high-pass filter + compressor) and use the PROCESSED stream for
+        // WebRTC. If noise suppression is disabled or fails, fall back to raw.
+        const { suppressor, stream: processedStream } = await createProcessedStream(rawStream)
+        if (aborted) {
+          suppressor?.destroy()
+          rawStream.getTracks().forEach((t) => t.stop())
+          return
+        }
+        noiseSuppressorRef.current = suppressor
+        localStreamRef.current = processedStream
+        console.log('[VC] Local stream ready for WebRTC. Noise suppression:', !!suppressor, 'tracks:', processedStream.getAudioTracks().length)
+
+        // Set up local speaking detection (tap the processed stream)
         const audioCtx = new AudioContext()
         await audioCtx.resume() // Ensure AudioContext is active (autoplay policy)
         audioCtxRef.current = audioCtx
-        const source = audioCtx.createMediaStreamSource(stream)
+        const source = audioCtx.createMediaStreamSource(processedStream)
         const analyser = audioCtx.createAnalyser()
         analyser.fftSize = 512
         analyser.smoothingTimeConstant = 0.8
@@ -628,6 +686,11 @@ export function VoiceChannel({ gcId }: VoiceChannelProps) {
     const newMuted = !isMuted
     setIsMuted(newMuted)
 
+    // Use the NoiseSuppressor's smooth mute (linear ramp, no clicks) if available
+    if (noiseSuppressorRef.current) {
+      noiseSuppressorRef.current.setMuted(newMuted)
+    }
+    // Also toggle track.enabled as a fallback / for raw stream mode
     const stream = localStreamRef.current
     if (stream) {
       stream.getAudioTracks().forEach((track) => {
@@ -691,6 +754,40 @@ export function VoiceChannel({ gcId }: VoiceChannelProps) {
                 </TooltipTrigger>
                 <TooltipContent side="top" className="text-xs">
                   {isMuted ? 'Unmute' : 'Mute'}
+                </TooltipContent>
+              </Tooltip>
+
+              {/* Noise Suppression Toggle */}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className={cn(
+                      'size-8',
+                      noiseSuppressionOn
+                        ? 'text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-accent'
+                    )}
+                    onClick={() => {
+                      const next = !noiseSuppressionOn
+                      setNoiseSuppressionOn(next)
+                      // Persist to localStorage so it's picked up on next VC join
+                      try {
+                        const raw = localStorage.getItem('ureedxdchat_audio_settings')
+                        const s = raw ? JSON.parse(raw) : {}
+                        s.noiseSuppression = next
+                        localStorage.setItem('ureedxdchat_audio_settings', JSON.stringify(s))
+                      } catch {}
+                      // Note: the toggle takes effect on the NEXT VC join.
+                      // Changing it mid-call would require rebuilding the audio pipeline.
+                    }}
+                  >
+                    <AudioWaveform className="size-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="text-xs">
+                  {noiseSuppressionOn ? 'Noise Suppression: ON' : 'Noise Suppression: OFF'}
                 </TooltipContent>
               </Tooltip>
 

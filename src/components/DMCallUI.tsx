@@ -6,6 +6,7 @@ import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { useAppStore } from '@/lib/store'
 import { answerCall, declineCall, hangUpCall, sendDMCallSignal, onSocketEvent, offSocketEvent } from '@/lib/socket'
+import { NoiseSuppressor, createProcessedStream } from '@/lib/noise-suppressor'
 import {
   Phone,
   PhoneOff,
@@ -16,6 +17,7 @@ import {
   Volume2,
   VolumeX,
   Headphones,
+  AudioWaveform,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -166,10 +168,28 @@ function RingingAnimation() {
 
 const ICE_CONFIG: RTCConfiguration = {
   iceServers: [
+    // STUN servers for candidate gathering
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
+    // Free public TURN servers (OpenRelay) — relay traffic when direct P2P fails.
+    {
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
   ],
+  iceTransportPolicy: 'all',
 }
 
 // Audio constraints — browser built-in echo cancellation + noise suppression
@@ -184,6 +204,8 @@ const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
 
 // Module-level WebRTC state (singleton — only one DM call at a time)
 let dmLocalStream: MediaStream | null = null
+let dmRawStream: MediaStream | null = null // original mic stream (before noise processing)
+let dmNoiseSuppressor: NoiseSuppressor | null = null
 let dmPeerConnection: RTCPeerConnection | null = null
 let dmRemoteAudioEl: HTMLAudioElement | null = null
 let dmIsMuted = false
@@ -199,10 +221,21 @@ function cleanupDMCall() {
     dmPeerConnection = null
   }
 
-  // Stop local stream
+  // Destroy the noise suppressor (closes its AudioContext + revokes blob URL)
+  if (dmNoiseSuppressor) {
+    dmNoiseSuppressor.destroy()
+    dmNoiseSuppressor = null
+  }
+
+  // Stop local stream (the processed stream's tracks)
   if (dmLocalStream) {
     dmLocalStream.getTracks().forEach((t) => t.stop())
     dmLocalStream = null
+  }
+  // Stop the RAW mic stream tracks too (they're separate from the processed stream)
+  if (dmRawStream) {
+    dmRawStream.getTracks().forEach((t) => t.stop())
+    dmRawStream = null
   }
   // Clear any in-flight capture promise so the next call starts fresh
   dmLocalStreamPromise = null
@@ -215,7 +248,7 @@ function cleanupDMCall() {
     dmRemoteAudioEl = null
   }
 
-  // Close audio context
+  // Close audio context (for speaking detection — separate from noise suppressor's)
   if (dmAudioCtx) {
     try { dmAudioCtx.close() } catch { /* ok */ }
     dmAudioCtx = null
@@ -238,10 +271,20 @@ async function setupLocalStream(): Promise<MediaStream | null> {
 
   dmLocalStreamPromise = (async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS)
-      dmLocalStream = stream
-      console.log('[DM Call] Got local stream, tracks:', stream.getTracks().length, stream.getAudioTracks().map(t => `${t.kind}:${t.enabled}:${t.readyState}:${t.label}`))
-      return stream
+      // Capture raw mic stream
+      const rawStream = await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS)
+      dmRawStream = rawStream
+      console.log('[DM Call] Got raw mic stream, tracks:', rawStream.getTracks().length, rawStream.getAudioTracks().map(t => `${t.kind}:${t.enabled}:${t.readyState}:${t.label}`))
+
+      // ── Noise suppression pipeline ──────────────────────────────────
+      // Route the raw mic through the NoiseSuppressor (AudioWorklet noise gate
+      // + high-pass filter + compressor) and use the PROCESSED stream for
+      // WebRTC. If noise suppression is disabled or fails, fall back to raw.
+      const { suppressor, stream: processedStream } = await createProcessedStream(rawStream)
+      dmNoiseSuppressor = suppressor
+      dmLocalStream = processedStream
+      console.log('[DM Call] Local stream ready for WebRTC. Noise suppression:', !!suppressor, 'tracks:', processedStream.getAudioTracks().length)
+      return processedStream
     } catch (err) {
       console.error('[DM Call] Failed to get microphone:', err)
       return null
@@ -254,6 +297,11 @@ async function setupLocalStream(): Promise<MediaStream | null> {
 
 function setDMCallMuted(muted: boolean) {
   dmIsMuted = muted
+  // Use the NoiseSuppressor's smooth mute (linear ramp, no clicks) if available
+  if (dmNoiseSuppressor) {
+    dmNoiseSuppressor.setMuted(muted)
+  }
+  // Also toggle track.enabled as a fallback / for raw stream mode
   if (dmLocalStream) {
     dmLocalStream.getAudioTracks().forEach((track) => {
       track.enabled = !muted
@@ -869,6 +917,13 @@ function ActiveCallBar() {
 
           {/* Right: controls */}
           <div className="flex items-center gap-1.5">
+            {/* Noise suppression indicator */}
+            {dmNoiseSuppressor && (
+              <div className="flex items-center gap-1 px-2 h-8 rounded-full bg-emerald-500/10 border border-emerald-500/20" title="Noise suppression active">
+                <AudioWaveform className="w-3.5 h-3.5 text-emerald-400" />
+              </div>
+            )}
+
             {/* Mute/Unmute */}
             <Button
               variant="ghost"
