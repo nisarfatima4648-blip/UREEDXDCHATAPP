@@ -254,7 +254,7 @@ const internalHttpServer = createServer((req, res) => {
   });
 });
 
-internalHttpServer.listen(3004, () => {
+internalHttpServer.listen(3004, '0.0.0.0', () => {
   console.log(`[chat-service] Internal API on port 3004`);
 });
 
@@ -647,8 +647,8 @@ io.on('connection', (socket) => {
 
 // ─── Start Server ───────────────────────────────────────────────────────────
 
-httpServer.listen(PORT, () => {
-  console.log(`[chat-service] Socket.io server running on port ${PORT}`);
+httpServer.listen(PORT, '0.0.0.0', () => {
+  console.log(`[chat-service] Socket.io server running on 0.0.0.0:${PORT}`);
 });
 
 // ─── Graceful Shutdown ──────────────────────────────────────────────────────
