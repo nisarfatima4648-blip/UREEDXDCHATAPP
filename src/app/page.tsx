@@ -224,15 +224,15 @@ export default function AppPage() {
 
     const onVCParticipants = (data: any) => {
       const sessions = (data.participants || []).map((p: any) => ({
-        id: `vc-${p.userId}-${Date.now()}`,
+        id: `vc-${p.user_id || p.userId}-${Date.now()}`,
         gc_id: data.gcId,
-        user_id: p.userId,
-        joined_at: p.joinedAt || new Date().toISOString(),
+        user_id: p.user_id || p.userId,
+        joined_at: p.joined_at || p.joinedAt || new Date().toISOString(),
         user: {
-          id: p.userId,
-          username: p.username,
-          display_name: p.displayName,
-          avatar_url: p.avatarUrl,
+          id: p.user_id || p.userId || p.user?.id,
+          username: p.user?.username || p.username,
+          display_name: p.user?.display_name || p.displayName,
+          avatar_url: p.user?.avatar_url || p.avatarUrl,
         },
       }))
       useAppStore.getState().setVoiceParticipants(data.gcId, sessions)
