@@ -3,7 +3,9 @@
 import { io, Socket } from 'socket.io-client'
 import type { Message } from '@/lib/database'
 
-const SOCKET_URL = '/?XTransformPort=3003'
+// In production (Vercel), use the deployed chat-service URL (Railway).
+// In dev, use the local gateway with XTransformPort.
+const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL || '/?XTransformPort=3003'
 
 let socket: Socket | null = null
 let lastUserId: string | null = null
