@@ -8,7 +8,7 @@ import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip
 import { Phone, PhoneOff, Volume2, Mic, MicOff, Loader2, AudioWaveform } from 'lucide-react'
 import { useAppStore } from '@/lib/store'
 import { joinVC, leaveVC, sendVCSignal, onSocketEvent, offSocketEvent } from '@/lib/socket'
-import { NoiseSuppressor, createProcessedStream, isNoiseSuppressionEnabled } from '@/lib/noise-suppressor'
+import { isNoiseSuppressionEnabled } from '@/lib/noise-suppressor'
 import { cn } from '@/lib/utils'
 import type { VoiceSession } from '@/lib/database'
 
@@ -205,8 +205,6 @@ export function VoiceChannel({ gcId }: VoiceChannelProps) {
 
   // ─── WebRTC Refs ───────────────────────────────────────────────────────────
   const localStreamRef = useRef<MediaStream | null>(null)
-  const rawStreamRef = useRef<MediaStream | null>(null) // original mic stream (before noise processing)
-  const noiseSuppressorRef = useRef<NoiseSuppressor | null>(null)
   const peersRef = useRef<Map<string, RTCPeerConnection>>(new Map())
   const audioCtxRef = useRef<AudioContext | null>(null)
   const localAnalyserRef = useRef<AnalyserNode | null>(null)
@@ -232,21 +230,10 @@ export function VoiceChannel({ gcId }: VoiceChannelProps) {
     peersRef.current.clear()
     offeredPeersRef.current.clear()
 
-    // Destroy the noise suppressor (closes its AudioContext + revokes blob URL)
-    if (noiseSuppressorRef.current) {
-      noiseSuppressorRef.current.destroy()
-      noiseSuppressorRef.current = null
-    }
-
-    // Stop local stream tracks (the processed stream's tracks)
+    // Stop local stream tracks (native getUserMedia stream)
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((t) => t.stop())
       localStreamRef.current = null
-    }
-    // Stop the RAW mic stream tracks too (they're separate from the processed stream)
-    if (rawStreamRef.current) {
-      rawStreamRef.current.getTracks().forEach((t) => t.stop())
-      rawStreamRef.current = null
     }
 
     // Close remote audio elements
@@ -587,34 +574,22 @@ export function VoiceChannel({ gcId }: VoiceChannelProps) {
       setConnectionStatus('connecting')
 
       try {
-        // Capture microphone (raw stream)
-        const rawStream = await navigator.mediaDevices.getUserMedia(getAudioConstraints())
+        // Capture microphone with browser-native noise suppression.
+        // The track from getUserMedia is a NATIVE track that always works with
+        // WebRTC — no AudioContext suspension issues, no silence bugs.
+        const stream = await navigator.mediaDevices.getUserMedia(getAudioConstraints())
         if (aborted) {
-          rawStream.getTracks().forEach((t) => t.stop())
+          stream.getTracks().forEach((t) => t.stop())
           return
         }
-        rawStreamRef.current = rawStream
-        console.log('[VC] Got raw mic stream, audio tracks:', rawStream.getAudioTracks().length, rawStream.getAudioTracks().map(t => `enabled=${t.enabled} ready=${t.readyState} label=${t.label}`))
+        localStreamRef.current = stream
+        console.log('[VC] Got local stream, audio tracks:', stream.getAudioTracks().length, stream.getAudioTracks().map(t => `enabled=${t.enabled} ready=${t.readyState} label=${t.label}`), 'noiseSuppression:', isNoiseSuppressionEnabled())
 
-        // ── Noise suppression pipeline ──────────────────────────────────
-        // Route the raw mic through the NoiseSuppressor (AudioWorklet noise gate
-        // + high-pass filter + compressor) and use the PROCESSED stream for
-        // WebRTC. If noise suppression is disabled or fails, fall back to raw.
-        const { suppressor, stream: processedStream } = await createProcessedStream(rawStream)
-        if (aborted) {
-          suppressor?.destroy()
-          rawStream.getTracks().forEach((t) => t.stop())
-          return
-        }
-        noiseSuppressorRef.current = suppressor
-        localStreamRef.current = processedStream
-        console.log('[VC] Local stream ready for WebRTC. Noise suppression:', !!suppressor, 'tracks:', processedStream.getAudioTracks().length)
-
-        // Set up local speaking detection (tap the processed stream)
+        // Set up local speaking detection
         const audioCtx = new AudioContext()
-        await audioCtx.resume() // Ensure AudioContext is active (autoplay policy)
+        await audioCtx.resume()
         audioCtxRef.current = audioCtx
-        const source = audioCtx.createMediaStreamSource(processedStream)
+        const source = audioCtx.createMediaStreamSource(stream)
         const analyser = audioCtx.createAnalyser()
         analyser.fftSize = 512
         analyser.smoothingTimeConstant = 0.8
@@ -686,11 +661,7 @@ export function VoiceChannel({ gcId }: VoiceChannelProps) {
     const newMuted = !isMuted
     setIsMuted(newMuted)
 
-    // Use the NoiseSuppressor's smooth mute (linear ramp, no clicks) if available
-    if (noiseSuppressorRef.current) {
-      noiseSuppressorRef.current.setMuted(newMuted)
-    }
-    // Also toggle track.enabled as a fallback / for raw stream mode
+    // Toggle track.enabled on the native getUserMedia stream
     const stream = localStreamRef.current
     if (stream) {
       stream.getAudioTracks().forEach((track) => {

@@ -590,53 +590,67 @@ function MessageItem({
                 )}
               </p>
 
-              {/* Attachment */}
-              {message.attachment_url && (
-                <div className="mt-1 relative group/attachment">
-                  {message.type === 'image' ? (
-                    <div className="relative inline-block">
-                      <img
-                        src={message.attachment_url}
-                        alt="Attachment"
-                        className="max-w-[400px] max-h-[300px] rounded-lg object-cover cursor-pointer hover:opacity-90 transition-opacity"
-                        loading="lazy"
-                        onClick={() => onOpenLightbox(message.attachment_url!)}
-                      />
-                      {/* Download button overlay on hover */}
-                      <a
-                        href={message.attachment_url}
-                        download
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="absolute top-2 right-2 z-10 size-8 flex items-center justify-center rounded-full bg-black/60 text-white opacity-0 group-hover/attachment:opacity-100 hover:bg-black/80 transition-all cursor-pointer"
-                        onClick={(e) => e.stopPropagation()}
-                        aria-label="Download image"
-                      >
-                        <Download className="size-4" />
-                      </a>
+              {/* Attachment — detect type from file extension as fallback */}
+              {message.attachment_url && (() => {
+                const url = message.attachment_url.toLowerCase()
+                const isImg = message.type === 'image' || url.match(/\.(png|jpg|jpeg|gif|webp|svg)$/)
+                const isVid = message.type === 'video' || url.match(/\.(mp4|webm|mov|avi|mkv|m4v)$/)
+
+                if (isImg) {
+                  return (
+                    <div className="mt-1 relative group/attachment">
+                      <div className="relative inline-block">
+                        <img
+                          src={message.attachment_url}
+                          alt="Attachment"
+                          className="max-w-[400px] max-h-[300px] rounded-lg object-cover cursor-pointer hover:opacity-90 transition-opacity"
+                          loading="lazy"
+                          onClick={() => onOpenLightbox(message.attachment_url!)}
+                        />
+                        <a
+                          href={message.attachment_url}
+                          download
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="absolute top-2 right-2 z-10 size-8 flex items-center justify-center rounded-full bg-black/60 text-white opacity-0 group-hover/attachment:opacity-100 hover:bg-black/80 transition-all cursor-pointer"
+                          onClick={(e) => e.stopPropagation()}
+                          aria-label="Download image"
+                        >
+                          <Download className="size-4" />
+                        </a>
+                      </div>
                     </div>
-                  ) : message.type === 'video' ? (
-                    <div className="relative inline-block">
-                      <video
-                        src={message.attachment_url}
-                        controls
-                        preload="metadata"
-                        className="max-w-[400px] max-h-[300px] rounded-lg"
-                      />
-                      {/* Download button */}
-                      <a
-                        href={message.attachment_url}
-                        download
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="absolute top-2 right-2 z-10 size-8 flex items-center justify-center rounded-full bg-black/60 text-white opacity-0 group-hover/attachment:opacity-100 hover:bg-black/80 transition-all cursor-pointer"
-                        onClick={(e) => e.stopPropagation()}
-                        aria-label="Download video"
-                      >
-                        <Download className="size-4" />
-                      </a>
+                  )
+                }
+
+                if (isVid) {
+                  return (
+                    <div className="mt-1 relative group/attachment">
+                      <div className="relative inline-block">
+                        <video
+                          src={message.attachment_url}
+                          controls
+                          preload="metadata"
+                          className="max-w-[400px] max-h-[300px] rounded-lg"
+                        />
+                        <a
+                          href={message.attachment_url}
+                          download
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="absolute top-2 right-2 z-10 size-8 flex items-center justify-center rounded-full bg-black/60 text-white opacity-0 group-hover/attachment:opacity-100 hover:bg-black/80 transition-all cursor-pointer"
+                          onClick={(e) => e.stopPropagation()}
+                          aria-label="Download video"
+                        >
+                          <Download className="size-4" />
+                        </a>
+                      </div>
                     </div>
-                  ) : (
+                  )
+                }
+
+                return (
+                  <div className="mt-1 relative group/attachment">
                     <a
                       href={message.attachment_url}
                       target="_blank"
@@ -649,9 +663,9 @@ function MessageItem({
                       </span>
                       <Download className="size-3.5 shrink-0" />
                     </a>
-                  )}
-                </div>
-              )}
+                  </div>
+                )
+              })()}
             </>
           )}
 
@@ -1290,10 +1304,13 @@ export function ChatView({ onOpenGCSettings, onAddMember }: ChatViewProps = {}) 
 
         if (res.ok) {
           const data = await res.json()
+          // IMPORTANT: determine type from the file's MIME type, NOT from the API response.
+          // The upload API returns type='attachment' (the FormData type parameter),
+          // which would cause the message to render as a file download link.
           setUploadPreview({
             url: data.url,
-            type: data.type || (isImage ? 'image' : 'video'),
-            fileName: data.fileName || file.name,
+            type: isImage ? 'image' : 'video',
+            fileName: file.name,
           })
           textareaRef.current?.focus()
         }
