@@ -69,10 +69,10 @@ io.on('connection', (socket) => {
   // AUTH
   // ═══════════════════════════════════════════════════════════════════════════
 
-  socket.on('auth', (payload: { userId: string }) => {
+  socket.on('auth', async (payload: { userId: string }) => {
     try {
       const { userId } = payload
-      const user = db.getUserById(userId)
+      const user = await db.getUserById(userId)
 
       if (!user) {
         socket.emit('auth:error', { message: 'User not found', timestamp: now() })
@@ -85,10 +85,10 @@ io.on('connection', (socket) => {
       userToSocket.set(userId, socket.id)
 
       // Update status to online
-      db.updateUserStatus(userId, 'online')
+      await db.updateUserStatus(userId, 'online')
 
       // Join all GC rooms the user is a member of
-      const gcList = db.getUserGCs(userId)
+      const gcList = await db.getUserGCs(userId)
       for (const gc of gcList) {
         socket.join(`gc:${gc.id}`)
       }
@@ -97,7 +97,7 @@ io.on('connection', (socket) => {
       socket.join(`user:${userId}`)
 
       // Also join any existing DM conversation rooms
-      const dmConversations = db.getUserDMs(userId)
+      const dmConversations = await db.getUserDMs(userId)
       for (const dm of dmConversations) {
         socket.join(`dm:${dm.id}`)
       }
@@ -112,7 +112,7 @@ io.on('connection', (socket) => {
       }
 
       // Broadcast to friends
-      const friends = db.getFriends(userId)
+      const friends = await db.getFriends(userId)
       for (const f of friends) {
         emitToUser(f.id, 'presence:update', presence)
       }
@@ -128,7 +128,7 @@ io.on('connection', (socket) => {
   // MESSAGING
   // ═══════════════════════════════════════════════════════════════════════════
 
-  socket.on('message:send', (payload: {
+  socket.on('message:send', async (payload: {
     gcId?: string
     dmConversationId?: string
     content: string
@@ -143,23 +143,23 @@ io.on('connection', (socket) => {
         return
       }
 
-      const user = db.getUserById(userId)
+      const user = await db.getUserById(userId)
       if (!user) return
 
       const { gcId, dmConversationId, content, type, attachmentUrl, replyToId } = payload
 
       // Validate access — must be member of GC or participant in DM
       if (gcId) {
-        if (!db.isMember(gcId, userId)) {
+        if (!await db.isMember(gcId, userId)) {
           socket.emit('error', { message: 'Not a member of this group chat', timestamp: now() })
           return
         }
       } else if (dmConversationId) {
-        const dm = db.getDMConversation(userId, 'dummy') // We need a different check
         // Check if user is in this DM by querying the conversation
-        const dmConv = db.raw
-          .query('SELECT 1 FROM dm_conversations WHERE id = ? AND (user1_id = ? OR user2_id = ?)')
-          .get(dmConversationId, userId, userId) as unknown
+        const dmConv = (await db.raw.query(
+          'SELECT 1 FROM dm_conversations WHERE id = $1 AND (user1_id = $2 OR user2_id = $3)',
+          [dmConversationId, userId, userId]
+        )).rows[0]
         if (!dmConv) {
           socket.emit('error', { message: 'Not a participant in this DM', timestamp: now() })
           return
@@ -173,7 +173,7 @@ io.on('connection', (socket) => {
 
       // Create message in DB
       const messageId = generateId()
-      const message = db.createMessage(messageId, {
+      const message = await db.createMessage(messageId, {
         gc_id: gcId ?? null,
         dm_conversation_id: dmConversationId ?? null,
         sender_id: userId,
@@ -207,9 +207,10 @@ io.on('connection', (socket) => {
       } else if (dmConversationId) {
         // For DMs, also ensure the other participant receives the message
         // even if they weren't in the room (e.g. DM created after their auth)
-        const dmConv = db.raw
-          .query('SELECT user1_id, user2_id FROM dm_conversations WHERE id = ?')
-          .get(dmConversationId) as any
+        const dmConv = (await db.raw.query(
+          'SELECT user1_id, user2_id FROM dm_conversations WHERE id = $1',
+          [dmConversationId]
+        )).rows[0] as any
         if (dmConv) {
           const otherUserId = dmConv.user1_id === userId ? dmConv.user2_id : dmConv.user1_id
           const otherSocket = getSocketByUser(otherUserId)
@@ -227,7 +228,7 @@ io.on('connection', (socket) => {
 
   // ── Typing Indicator ───────────────────────────────────────────────────────
 
-  socket.on('message:typing', (payload: {
+  socket.on('message:typing', async (payload: {
     gcId?: string
     dmConversationId?: string
     isTyping: boolean
@@ -236,7 +237,7 @@ io.on('connection', (socket) => {
       const userId = getUserId(socket)
       if (!userId) return
 
-      const user = db.getUserById(userId)
+      const user = await db.getUserById(userId)
       if (!user) return
 
       const typingPayload = {
@@ -263,20 +264,20 @@ io.on('connection', (socket) => {
   // PRESENCE
   // ═══════════════════════════════════════════════════════════════════════════
 
-  socket.on('presence:change', (payload: { status: 'online' | 'idle' | 'dnd' | 'invisible' }) => {
+  socket.on('presence:change', async (payload: { status: 'online' | 'idle' | 'dnd' | 'invisible' }) => {
     try {
       const userId = getUserId(socket)
       if (!userId) return
 
-      const user = db.getUserById(userId)
+      const user = await db.getUserById(userId)
       if (!user) return
 
       const { status } = payload
-      const gcList = db.getUserGCs(userId)
+      const gcList = await db.getUserGCs(userId)
 
       if (status === 'invisible') {
         // Internally keep online but show offline to others
-        db.updateUserStatus(userId, 'offline')
+        await db.updateUserStatus(userId, 'offline')
 
         const offlinePresence = {
           userId,
@@ -289,12 +290,12 @@ io.on('connection', (socket) => {
           socket.to(`gc:${gc.id}`).emit('presence:update', offlinePresence)
         }
 
-        const friends = db.getFriends(userId)
+        const friends = await db.getFriends(userId)
         for (const f of friends) {
           emitToUser(f.id, 'presence:update', offlinePresence)
         }
       } else {
-        db.updateUserStatus(userId, status)
+        await db.updateUserStatus(userId, status)
 
         const presence = {
           userId,
@@ -307,7 +308,7 @@ io.on('connection', (socket) => {
           socket.to(`gc:${gc.id}`).emit('presence:update', presence)
         }
 
-        const friends = db.getFriends(userId)
+        const friends = await db.getFriends(userId)
         for (const f of friends) {
           emitToUser(f.id, 'presence:update', presence)
         }
@@ -322,7 +323,7 @@ io.on('connection', (socket) => {
 
   // ── User Profile Update (broadcast to all GC rooms the user is in) ───────
 
-  socket.on('user:profile:update', (payload: {
+  socket.on('user:profile:update', async (payload: {
     userId: string
     displayName?: string
     bio?: string
@@ -334,29 +335,30 @@ io.on('connection', (socket) => {
       const userId = getUserId(socket)
       if (!userId || userId !== payload.userId) return
 
-      // Update DB
+      // Update DB — build parameterized query for Postgres
       const updates: string[] = []
       const params: any[] = []
-      if (payload.displayName !== undefined) { updates.push('display_name = ?'); params.push(payload.displayName) }
-      if (payload.bio !== undefined) { updates.push('bio = ?'); params.push(payload.bio) }
-      if (payload.customStatus !== undefined) { updates.push('custom_status = ?'); params.push(payload.customStatus) }
-      if (payload.avatarUrl !== undefined) { updates.push('avatar_url = ?'); params.push(payload.avatarUrl) }
-      if (payload.bannerUrl !== undefined) { updates.push('banner_url = ?'); params.push(payload.bannerUrl) }
+      let paramIdx = 1
+      if (payload.displayName !== undefined) { updates.push(`display_name = $${paramIdx++}`); params.push(payload.displayName) }
+      if (payload.bio !== undefined) { updates.push(`bio = $${paramIdx++}`); params.push(payload.bio) }
+      if (payload.customStatus !== undefined) { updates.push(`custom_status = $${paramIdx++}`); params.push(payload.customStatus) }
+      if (payload.avatarUrl !== undefined) { updates.push(`avatar_url = $${paramIdx++}`); params.push(payload.avatarUrl) }
+      if (payload.bannerUrl !== undefined) { updates.push(`banner_url = $${paramIdx++}`); params.push(payload.bannerUrl) }
       if (updates.length > 0) {
-        updates.push("updated_at = datetime('now')")
+        updates.push("updated_at = NOW()")
         params.push(userId)
-        db.raw.query(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`).run(...params)
+        await db.raw.query(`UPDATE users SET ${updates.join(', ')} WHERE id = $${paramIdx}`, params)
       }
 
       // Broadcast to all GC rooms
-      const gcList = db.getUserGCs(userId)
+      const gcList = await db.getUserGCs(userId)
       const broadcastData = { userId, ...payload, timestamp: now() }
       for (const gc of gcList) {
         socket.to(`gc:${gc.id}`).emit('user:profile:update', broadcastData)
       }
 
       // Also emit to any DM conversations
-      const dmConvs = db.getUserDMs(userId)
+      const dmConvs = await db.getUserDMs(userId)
       for (const dm of dmConvs) {
         socket.to(`dm:${dm.id}`).emit('user:profile:update', broadcastData)
       }
@@ -369,23 +371,23 @@ io.on('connection', (socket) => {
   // VOICE CHANNEL
   // ═══════════════════════════════════════════════════════════════════════════
 
-  socket.on('vc:join', (payload: { gcId: string }) => {
+  socket.on('vc:join', async (payload: { gcId: string }) => {
     try {
       const userId = getUserId(socket)
       if (!userId) return
 
-      const user = db.getUserById(userId)
+      const user = await db.getUserById(userId)
       if (!user) return
 
       const { gcId } = payload
 
-      if (!db.isMember(gcId, userId)) {
+      if (!await db.isMember(gcId, userId)) {
         socket.emit('error', { message: 'Not a member of this group chat', timestamp: now() })
         return
       }
 
       // Create voice session (db.joinVoice also removes any existing session for this user)
-      db.joinVoice(gcId, userId)
+      await db.joinVoice(gcId, userId)
 
       // Join the VC room for signaling
       socket.join(`vc:${gcId}`)
@@ -401,7 +403,7 @@ io.on('connection', (socket) => {
       })
 
       // Send current participants list to the joining user
-      const participants = db.getVoiceParticipants(gcId)
+      const participants = await db.getVoiceParticipants(gcId)
       socket.emit('vc:participants', {
         gcId,
         participants: participants.map((p) => ({
@@ -421,17 +423,17 @@ io.on('connection', (socket) => {
     }
   })
 
-  socket.on('vc:leave', (payload: { gcId: string }) => {
+  socket.on('vc:leave', async (payload: { gcId: string }) => {
     try {
       const userId = getUserId(socket)
       if (!userId) return
 
-      const user = db.getUserById(userId)
+      const user = await db.getUserById(userId)
       if (!user) return
 
       const { gcId } = payload
 
-      db.leaveVoice(gcId, userId)
+      await db.leaveVoice(gcId, userId)
       socket.leave(`vc:${gcId}`)
 
       const leavePayload = {
@@ -460,7 +462,7 @@ io.on('connection', (socket) => {
 
   // ─── WebRTC Signaling Relay ──────────────────────────────────────────────
 
-  socket.on('vc:signal', (payload: { gcId: string; targetUserId: string; signal: any }) => {
+  socket.on('vc:signal', async (payload: { gcId: string; targetUserId: string; signal: any }) => {
     try {
       const userId = getUserId(socket)
       if (!userId) return
@@ -482,21 +484,21 @@ io.on('connection', (socket) => {
   // GC MEMBER MANAGEMENT
   // ═══════════════════════════════════════════════════════════════════════════
 
-  socket.on('gc:member:add', (payload: { gcId: string; userId: string; role?: string }) => {
+  socket.on('gc:member:add', async (payload: { gcId: string; userId: string; role?: string }) => {
     try {
       const userId = getUserId(socket)
       if (!userId) return
 
       const { gcId, userId: targetUserId, role } = payload
 
-      if (!db.isMember(gcId, userId)) {
+      if (!await db.isMember(gcId, userId)) {
         socket.emit('error', { message: 'Not a member of this group chat', timestamp: now() })
         return
       }
 
-      db.addMember(gcId, targetUserId, (role as any) ?? 'member')
+      await db.addMember(gcId, targetUserId, (role as any) ?? 'member')
 
-      const targetUser = db.getUserById(targetUserId)
+      const targetUser = await db.getUserById(targetUserId)
 
       // IMPORTANT: Join target user to GC room BEFORE emitting so they receive the event
       const targetSocket = getSocketByUser(targetUserId)
@@ -505,7 +507,7 @@ io.on('connection', (socket) => {
       }
 
       // Fetch full GC data so the new member can add it to their sidebar
-      const gc = db.getGCById(gcId)
+      const gc = await db.getGCById(gcId)
 
       const memberData = {
         gcId,
@@ -534,22 +536,22 @@ io.on('connection', (socket) => {
     }
   })
 
-  socket.on('gc:member:remove', (payload: { gcId: string; userId: string }) => {
+  socket.on('gc:member:remove', async (payload: { gcId: string; userId: string }) => {
     try {
       const userId = getUserId(socket)
       if (!userId) return
 
       const { gcId, userId: targetUserId } = payload
 
-      if (!db.isMember(gcId, userId)) {
+      if (!await db.isMember(gcId, userId)) {
         socket.emit('error', { message: 'Not a member of this group chat', timestamp: now() })
         return
       }
 
-      db.removeMember(gcId, targetUserId)
+      await db.removeMember(gcId, targetUserId)
 
       // Remove from VC if in one
-      db.leaveVoice(gcId, targetUserId)
+      await db.leaveVoice(gcId, targetUserId)
 
       const memberData = {
         gcId,
@@ -573,23 +575,23 @@ io.on('connection', (socket) => {
     }
   })
 
-  socket.on('gc:member:ban', (payload: { gcId: string; userId: string; reason?: string }) => {
+  socket.on('gc:member:ban', async (payload: { gcId: string; userId: string; reason?: string }) => {
     try {
       const userId = getUserId(socket)
       if (!userId) return
 
       const { gcId, userId: targetUserId, reason } = payload
 
-      if (!db.isMember(gcId, userId)) {
+      if (!await db.isMember(gcId, userId)) {
         socket.emit('error', { message: 'Not a member of this group chat', timestamp: now() })
         return
       }
 
-      db.banUser(gcId, targetUserId, reason)
+      await db.banUser(gcId, targetUserId, reason)
 
       // Remove from members and VC
-      db.removeMember(gcId, targetUserId)
-      db.leaveVoice(gcId, targetUserId)
+      await db.removeMember(gcId, targetUserId)
+      await db.leaveVoice(gcId, targetUserId)
 
       const banData = {
         gcId,
@@ -615,7 +617,7 @@ io.on('connection', (socket) => {
     }
   })
 
-  socket.on('gc:update', (payload: {
+  socket.on('gc:update', async (payload: {
     gcId: string
     name?: string
     iconUrl?: string
@@ -627,12 +629,12 @@ io.on('connection', (socket) => {
 
       const { gcId, name, iconUrl, description } = payload
 
-      if (!db.isMember(gcId, userId)) {
+      if (!await db.isMember(gcId, userId)) {
         socket.emit('error', { message: 'Not a member of this group chat', timestamp: now() })
         return
       }
 
-      const updatedGC = db.updateGC(gcId, {
+      const updatedGC = await db.updateGC(gcId, {
         name,
         icon_url: iconUrl,
         description,
@@ -665,16 +667,16 @@ io.on('connection', (socket) => {
   // FRIEND REQUESTS
   // ═══════════════════════════════════════════════════════════════════════════
 
-  socket.on('friend:request:send', (payload: { receiverId: string }) => {
+  socket.on('friend:request:send', async (payload: { receiverId: string }) => {
     try {
       const userId = getUserId(socket)
       if (!userId) return
 
-      const user = db.getUserById(userId)
+      const user = await db.getUserById(userId)
       if (!user) return
 
       const { receiverId } = payload
-      const request = db.sendFriendRequest(userId, receiverId)
+      const request = await db.sendFriendRequest(userId, receiverId)
 
       const requestData = {
         id: request.id,
@@ -699,7 +701,7 @@ io.on('connection', (socket) => {
     }
   })
 
-  socket.on('friend:request:accept', (payload: { requestId: string }) => {
+  socket.on('friend:request:accept', async (payload: { requestId: string }) => {
     try {
       const userId = getUserId(socket)
       if (!userId) return
@@ -707,16 +709,17 @@ io.on('connection', (socket) => {
       const { requestId } = payload
 
       // Get the request details before updating
-      const req = db.raw
-        .query('SELECT * FROM friend_requests WHERE id = ?')
-        .get(requestId) as Record<string, any> | undefined
+      const req = (await db.raw.query(
+        'SELECT * FROM friend_requests WHERE id = $1',
+        [requestId]
+      )).rows[0] as Record<string, any> | undefined
 
       if (!req) {
         socket.emit('error', { message: 'Friend request not found', timestamp: now() })
         return
       }
 
-      db.acceptFriendRequest(requestId)
+      await db.acceptFriendRequest(requestId)
 
       const acceptData = {
         id: requestId,
@@ -737,7 +740,7 @@ io.on('connection', (socket) => {
     }
   })
 
-  socket.on('friend:request:decline', (payload: { requestId: string }) => {
+  socket.on('friend:request:decline', async (payload: { requestId: string }) => {
     try {
       const userId = getUserId(socket)
       if (!userId) return
@@ -745,16 +748,17 @@ io.on('connection', (socket) => {
       const { requestId } = payload
 
       // Get the request details before updating
-      const req = db.raw
-        .query('SELECT * FROM friend_requests WHERE id = ?')
-        .get(requestId) as Record<string, any> | undefined
+      const req = (await db.raw.query(
+        'SELECT * FROM friend_requests WHERE id = $1',
+        [requestId]
+      )).rows[0] as Record<string, any> | undefined
 
       if (!req) {
         socket.emit('error', { message: 'Friend request not found', timestamp: now() })
         return
       }
 
-      db.declineFriendRequest(requestId)
+      await db.declineFriendRequest(requestId)
 
       const declineData = {
         id: requestId,
@@ -781,19 +785,19 @@ io.on('connection', (socket) => {
   // CUSTOM EMOJIS
   // ═══════════════════════════════════════════════════════════════════════════
 
-  socket.on('emoji:add', (payload: { gcId: string; name: string; imageUrl: string }) => {
+  socket.on('emoji:add', async (payload: { gcId: string; name: string; imageUrl: string }) => {
     try {
       const userId = getUserId(socket)
       if (!userId) return
 
       const { gcId, name, imageUrl } = payload
 
-      if (!db.isMember(gcId, userId)) {
+      if (!await db.isMember(gcId, userId)) {
         socket.emit('error', { message: 'Not a member of this group chat', timestamp: now() })
         return
       }
 
-      const emoji = db.addEmoji(gcId, name, imageUrl, userId)
+      const emoji = await db.addEmoji(gcId, name, imageUrl, userId)
 
       const emojiData = {
         id: emoji.id,
@@ -814,22 +818,22 @@ io.on('connection', (socket) => {
     }
   })
 
-  socket.on('emoji:remove', (payload: { gcId: string; emojiId: string }) => {
+  socket.on('emoji:remove', async (payload: { gcId: string; emojiId: string }) => {
     try {
       const userId = getUserId(socket)
       if (!userId) return
 
       const { gcId, emojiId } = payload
 
-      if (!db.isMember(gcId, userId)) {
+      if (!await db.isMember(gcId, userId)) {
         socket.emit('error', { message: 'Not a member of this group chat', timestamp: now() })
         return
       }
 
       // Fetch emoji before deleting
-      const emoji = db.getEmojiById(emojiId)
+      const emoji = await db.getEmojiById(emojiId)
 
-      db.removeEmoji(emojiId)
+      await db.removeEmoji(emojiId)
 
       const emojiData = {
         id: emojiId,
@@ -855,17 +859,17 @@ io.on('connection', (socket) => {
   // DM VOICE CALLS
   // ═══════════════════════════════════════════════════════════════════════════
 
-  socket.on('dm:call', (payload: { dmConversationId: string }) => {
+  socket.on('dm:call', async (payload: { dmConversationId: string }) => {
     try {
       const userId = getUserId(socket)
       if (!userId) return
 
       const { dmConversationId } = payload
-      const user = db.getUserById(userId)
+      const user = await db.getUserById(userId)
       if (!user) return
 
       // Look up the DM conversation
-      const dm = db.getDMById(dmConversationId)
+      const dm = await db.getDMById(dmConversationId)
       if (!dm) {
         socket.emit('error', { message: 'DM conversation not found', timestamp: now() })
         return
@@ -873,7 +877,7 @@ io.on('connection', (socket) => {
 
       // Determine the other user in this DM
       const otherUserId = dm.user1_id === userId ? dm.user2_id : dm.user1_id
-      const otherUser = db.getUserById(otherUserId)
+      const otherUser = await db.getUserById(otherUserId)
       if (!otherUser) {
         socket.emit('error', { message: 'User not found', timestamp: now() })
         return
@@ -908,20 +912,20 @@ io.on('connection', (socket) => {
     }
   })
 
-  socket.on('dm:call:answer', (payload: { dmConversationId: string }) => {
+  socket.on('dm:call:answer', async (payload: { dmConversationId: string }) => {
     try {
       const userId = getUserId(socket)
       if (!userId) return
 
       const { dmConversationId } = payload
-      const user = db.getUserById(userId)
+      const user = await db.getUserById(userId)
       if (!user) return
 
-      const dm = db.getDMById(dmConversationId)
+      const dm = await db.getDMById(dmConversationId)
       if (!dm) return
 
       const otherUserId = dm.user1_id === userId ? dm.user2_id : dm.user1_id
-      const otherUser = db.getUserById(otherUserId)
+      const otherUser = await db.getUserById(otherUserId)
       if (!otherUser) return
 
       console.log(`[dm:call:answer] ${user.username} accepted call from ${otherUser.username}`)
@@ -952,16 +956,16 @@ io.on('connection', (socket) => {
     }
   })
 
-  socket.on('dm:call:decline', (payload: { dmConversationId: string }) => {
+  socket.on('dm:call:decline', async (payload: { dmConversationId: string }) => {
     try {
       const userId = getUserId(socket)
       if (!userId) return
 
       const { dmConversationId } = payload
-      const user = db.getUserById(userId)
+      const user = await db.getUserById(userId)
       if (!user) return
 
-      const dm = db.getDMById(dmConversationId)
+      const dm = await db.getDMById(dmConversationId)
       if (!dm) return
 
       const otherUserId = dm.user1_id === userId ? dm.user2_id : dm.user1_id
@@ -978,14 +982,14 @@ io.on('connection', (socket) => {
     }
   })
 
-  socket.on('dm:call:hangup', (payload: { dmConversationId: string }) => {
+  socket.on('dm:call:hangup', async (payload: { dmConversationId: string }) => {
     try {
       const userId = getUserId(socket)
       if (!userId) return
 
       const { dmConversationId } = payload
 
-      const dm = db.getDMById(dmConversationId)
+      const dm = await db.getDMById(dmConversationId)
       if (!dm) return
 
       const otherUserId = dm.user1_id === userId ? dm.user2_id : dm.user1_id
@@ -1004,7 +1008,7 @@ io.on('connection', (socket) => {
 
   // ─── DM Call WebRTC Signal Relay ──────────────────────────────────────
 
-  socket.on('dm:call:signal', (payload: { dmConversationId: string; targetUserId: string; signal: any }) => {
+  socket.on('dm:call:signal', async (payload: { dmConversationId: string; targetUserId: string; signal: any }) => {
     try {
       const userId = getUserId(socket)
       if (!userId) return
@@ -1026,7 +1030,7 @@ io.on('connection', (socket) => {
   // DISCONNECT
   // ═══════════════════════════════════════════════════════════════════════════
 
-  socket.on('disconnect', () => {
+  socket.on('disconnect', async () => {
     try {
       const userId = socketToUser.get(socket.id)
       if (!userId) {
@@ -1034,20 +1038,20 @@ io.on('connection', (socket) => {
         return
       }
 
-      const user = db.getUserById(userId)
+      const user = await db.getUserById(userId)
 
       // Set status to offline
-      db.updateUserStatus(userId, 'offline')
+      await db.updateUserStatus(userId, 'offline')
 
       // Remove from tracking maps
       socketToUser.delete(socket.id)
       userToSocket.delete(userId)
 
       // Get memberships for broadcasting
-      const gcList = db.getUserGCs(userId)
+      const gcList = await db.getUserGCs(userId)
 
       // Remove all voice sessions for this user
-      const voiceSession = db.getUserVoiceSession(userId)
+      const voiceSession = await db.getUserVoiceSession(userId)
 
       // Broadcast presence update to all GC rooms
       if (user) {
@@ -1062,7 +1066,7 @@ io.on('connection', (socket) => {
           io.to(`gc:${gc.id}`).emit('presence:update', presence)
         }
 
-        const friends = db.getFriends(userId)
+        const friends = await db.getFriends(userId)
         for (const f of friends) {
           emitToUser(f.id, 'presence:update', presence)
         }
@@ -1070,7 +1074,7 @@ io.on('connection', (socket) => {
 
       // Broadcast VC leave if user was in a voice channel
       if (voiceSession) {
-        db.leaveVoice(voiceSession.gc_id, userId)
+        await db.leaveVoice(voiceSession.gc_id, userId)
 
         io.to(`gc:${voiceSession.gc_id}`).emit('vc:user-left', {
           userId,
@@ -1090,7 +1094,7 @@ io.on('connection', (socket) => {
 
   // ── Error Handler ────────────────────────────────────────────────────────
 
-  socket.on('error', (error) => {
+  socket.on('error', async (error) => {
     console.error(`[socket:error] ${socket.id}:`, error)
   })
 })

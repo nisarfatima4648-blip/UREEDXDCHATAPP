@@ -13,7 +13,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    db.unblockUser(blockerId, blockedId);
+    await db.unblockUser(blockerId, blockedId);
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Unblock user error:', error);

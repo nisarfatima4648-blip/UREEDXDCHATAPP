@@ -18,9 +18,9 @@ export async function PUT(
     }
 
     if (action === 'accept') {
-      db.acceptFriendRequest(id);
+      await db.acceptFriendRequest(id);
     } else {
-      db.declineFriendRequest(id);
+      await db.declineFriendRequest(id);
     }
 
     return NextResponse.json({ success: true, action });

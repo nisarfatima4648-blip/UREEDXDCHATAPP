@@ -13,7 +13,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    db.removeFriend(userId, otherUserId);
+    await db.removeFriend(userId, otherUserId);
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Remove friend error:', error);

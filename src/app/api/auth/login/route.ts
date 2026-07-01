@@ -8,11 +8,11 @@ export async function POST(request: NextRequest) {
 
     // Auto-login by userId (for returning users)
     if (userId && !username) {
-      const user = db.getUserById(userId);
+      const user = await db.getUserById(userId);
       if (!user) {
         return NextResponse.json({ error: 'User not found' }, { status: 404 });
       }
-      const updatedUser = db.updateUserStatus(user.id, 'online');
+      const updatedUser = await db.updateUserStatus(user.id, 'online');
       return NextResponse.json(updatedUser);
     }
 
@@ -23,7 +23,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const user = db.getUserByUsername(username);
+    const user = await db.getUserByUsername(username);
     if (!user) {
       return NextResponse.json(
         { error: 'User not found' },
@@ -31,7 +31,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const updatedUser = db.updateUserStatus(user.id, 'online');
+    const updatedUser = await db.updateUserStatus(user.id, 'online');
     return NextResponse.json(updatedUser);
   } catch (error) {
     console.error('Login error:', error);

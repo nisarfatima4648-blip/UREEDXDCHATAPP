@@ -9,7 +9,7 @@ export async function GET(request: NextRequest) {
 
     // Get single user by ID
     if (userId) {
-      const user = db.getUserById(userId);
+      const user = await db.getUserById(userId);
       if (!user) {
         return NextResponse.json({ error: 'User not found' }, { status: 404 });
       }
@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
     // Search users by query
     if (q) {
       const excludeUserId = searchParams.get('excludeUserId');
-      let users = db.searchUsers(q);
+      let users = await db.searchUsers(q);
 
       if (excludeUserId) {
         users = users.filter((u) => u.id !== excludeUserId);

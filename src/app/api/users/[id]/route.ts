@@ -8,7 +8,7 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
-    const user = db.getUserById(id);
+    const user = await db.getUserById(id);
     if (!user) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 });
     }
@@ -28,7 +28,7 @@ export async function PUT(
 ) {
   try {
     const { id } = await params;
-    const user = db.getUserById(id);
+    const user = await db.getUserById(id);
     if (!user) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 });
     }
@@ -42,7 +42,7 @@ export async function PUT(
     if (body.bio !== undefined) data.bio = body.bio;
     if (body.customStatus !== undefined) data.custom_status = body.customStatus;
 
-    const updatedUser = db.updateUser(id, data);
+    const updatedUser = await db.updateUser(id, data);
     return NextResponse.json(updatedUser);
   } catch (error) {
     console.error('Update user error:', error);
@@ -59,11 +59,11 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-    const user = db.getUserById(id);
+    const user = await db.getUserById(id);
     if (!user) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 });
     }
-    db.deleteUser(id);
+    await db.deleteUser(id);
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Delete user error:', error);

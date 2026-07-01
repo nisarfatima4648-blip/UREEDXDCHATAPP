@@ -7,22 +7,22 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
-    const gc = db.getGCById(id);
+    const gc = await db.getGCById(id);
     if (!gc) {
       return NextResponse.json({ error: 'Group chat not found' }, { status: 404 });
     }
 
-    // Get banned users with user info via raw query
-    const bannedUsers = db.raw
-      .query(`
-        SELECT b.*, u.id as uid, u.username, u.display_name, u.email, u.avatar_url, u.banner_url,
+    // Get banned users with user info via raw query (Postgres)
+    const queryResult = await db.raw.query(
+      `SELECT b.*, u.id as uid, u.username, u.display_name, u.email, u.avatar_url, u.banner_url,
           u.bio, u.status, u.custom_status, u.last_seen, u.created_at as ucreated_at, u.updated_at as uupdated_at
         FROM gc_bans b
         INNER JOIN users u ON b.user_id = u.id
-        WHERE b.gc_id = ?
-        ORDER BY b.created_at DESC
-      `)
-      .all(id) as Record<string, unknown>[];
+        WHERE b.gc_id = $1
+        ORDER BY b.created_at DESC`,
+      [id]
+    );
+    const bannedUsers = queryResult.rows as Record<string, unknown>[];
 
     const result = bannedUsers.map((row) => ({
       id: row.id as string,

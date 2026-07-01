@@ -7,7 +7,7 @@ export async function POST(
 ) {
   try {
     const { id } = await params;
-    const gc = db.getGCById(id);
+    const gc = await db.getGCById(id);
     if (!gc) {
       return NextResponse.json({ error: 'Group chat not found' }, { status: 404 });
     }
@@ -23,17 +23,17 @@ export async function POST(
     }
 
     // Verify new owner is a member
-    if (!db.isMember(id, newOwnerId)) {
+    if (!await db.isMember(id, newOwnerId)) {
       return NextResponse.json(
         { error: 'New owner must be a member of this group' },
         { status: 400 }
       );
     }
 
-    db.transferOwnership(id, newOwnerId);
+    await db.transferOwnership(id, newOwnerId);
 
     // Re-fetch the updated GC
-    const updatedGC = db.getGCById(id);
+    const updatedGC = await db.getGCById(id);
     return NextResponse.json(updatedGC);
   } catch (error) {
     console.error('Transfer ownership error:', error);

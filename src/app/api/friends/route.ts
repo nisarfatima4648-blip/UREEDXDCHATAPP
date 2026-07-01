@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const friends = db.getFriends(userId);
+    const friends = await db.getFriends(userId);
     return NextResponse.json(friends);
   } catch (error) {
     console.error('Get friends error:', error);

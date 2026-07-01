@@ -10,12 +10,12 @@ export async function GET(request: NextRequest) {
     const before = searchParams.get('before') || undefined;
 
     if (gcId) {
-      const messages = db.getGCMessages(gcId, limit, before);
+      const messages = await db.getGCMessages(gcId, limit, before);
       return NextResponse.json(messages);
     }
 
     if (dmId) {
-      const messages = db.getDMMessages(dmId, limit, before);
+      const messages = await db.getDMMessages(dmId, limit, before);
       return NextResponse.json(messages);
     }
 

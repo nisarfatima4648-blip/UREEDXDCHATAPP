@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const requests = db.getPendingRequests(userId);
+    const requests = await db.getPendingRequests(userId);
     return NextResponse.json(requests);
   } catch (error) {
     console.error('Get friend requests error:', error);
@@ -44,14 +44,14 @@ export async function POST(request: NextRequest) {
     }
 
     // Check if already friends
-    if (db.areFriends(senderId, receiverId)) {
+    if (await db.areFriends(senderId, receiverId)) {
       return NextResponse.json(
         { error: 'Already friends with this user' },
         { status: 409 }
       );
     }
 
-    const friendRequest = db.sendFriendRequest(senderId, receiverId);
+    const friendRequest = await db.sendFriendRequest(senderId, receiverId);
     return NextResponse.json(friendRequest, { status: 201 });
   } catch (error) {
     console.error('Send friend request error:', error);

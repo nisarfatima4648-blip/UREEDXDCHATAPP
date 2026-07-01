@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const blockedUsers = db.getBlockedUsers(userId);
+    const blockedUsers = await db.getBlockedUsers(userId);
     return NextResponse.json(blockedUsers);
   } catch (error) {
     console.error('Get blocked users error:', error);
@@ -43,7 +43,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    db.blockUser(blockerId, blockedId);
+    await db.blockUser(blockerId, blockedId);
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Block user error:', error);

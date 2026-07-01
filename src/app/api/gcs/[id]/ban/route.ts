@@ -7,7 +7,7 @@ export async function POST(
 ) {
   try {
     const { id } = await params;
-    const gc = db.getGCById(id);
+    const gc = await db.getGCById(id);
     if (!gc) {
       return NextResponse.json({ error: 'Group chat not found' }, { status: 404 });
     }
@@ -23,11 +23,11 @@ export async function POST(
     }
 
     // Remove from members if they are a member
-    if (db.isMember(id, userId)) {
-      db.removeMember(id, userId);
+    if (await db.isMember(id, userId)) {
+      await db.removeMember(id, userId);
     }
 
-    db.banUser(id, userId, reason);
+    await db.banUser(id, userId, reason);
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Ban user error:', error);
@@ -54,7 +54,7 @@ export async function DELETE(
       );
     }
 
-    db.unbanUser(id, userId);
+    await db.unbanUser(id, userId);
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Unban user error:', error);

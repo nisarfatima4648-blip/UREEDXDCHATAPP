@@ -2,10 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/database';
 
 /** Notify chat-service about a new DM conversation (fire-and-forget) */
-function notifyChatService(conversation: any, creatorId: string, otherUser: any) {
+async function notifyChatService(conversation: any, creatorId: string, otherUser: any) {
   try {
-    const creatorUser = db.getUserById(creatorId);
-    fetch(`http://localhost:3003/api/internal/dm-conversation-created`, {
+    const creatorUser = await db.getUserById(creatorId);
+    fetch(`http://localhost:3004/api/internal/dm-conversation-created`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -54,16 +54,16 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const conversation = db.getOrCreateDM(user1Id, user2Id);
+    const conversation = await db.getOrCreateDM(user1Id, user2Id);
 
     // Also get the other user's info
     const otherUserId = conversation.user1_id === user1Id ? conversation.user2_id : conversation.user1_id;
-    const otherUser = db.getUserById(otherUserId);
+    const otherUser = await db.getUserById(otherUserId);
 
     // Check if this is a newly created DM (no messages yet and very recent)
     // Always notify so the other user gets the DM in their sidebar in real-time
     // The client's addDMConversation handler deduplicates by ID
-    notifyChatService(conversation, user1Id, otherUser);
+    await notifyChatService(conversation, user1Id, otherUser);
 
     return NextResponse.json({
       ...conversation,

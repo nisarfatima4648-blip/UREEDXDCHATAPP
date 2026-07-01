@@ -15,15 +15,15 @@ export async function GET(request: NextRequest) {
 
     if (gcId) {
       const [messages, emojis, members] = await Promise.all([
-        Promise.resolve(db.getGCMessages(gcId, limit, before)),
-        Promise.resolve(db.getGCEmojis(gcId)),
-        Promise.resolve(db.getGCMembers(gcId)),
+        Promise.resolve(await db.getGCMessages(gcId, limit, before)),
+        Promise.resolve(await db.getGCEmojis(gcId)),
+        Promise.resolve(await db.getGCMembers(gcId)),
       ]);
       return NextResponse.json({ messages, emojis, members });
     }
 
     if (dmConversationId) {
-      const messages = db.getDMMessages(dmConversationId, limit, before);
+      const messages = await db.getDMMessages(dmConversationId, limit, before);
       return NextResponse.json({ messages });
     }
 

@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const emojis = db.getGCEmojis(gcId);
+    const emojis = await db.getGCEmojis(gcId);
     return NextResponse.json(emojis);
   } catch (error) {
     console.error('Get emojis error:', error);
@@ -36,7 +36,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const emoji = db.addEmoji(gcId, name, imageUrl, uploadedBy);
+    const emoji = await db.addEmoji(gcId, name, imageUrl, uploadedBy);
     return NextResponse.json(emoji, { status: 201 });
   } catch (error) {
     console.error('Add emoji error:', error);

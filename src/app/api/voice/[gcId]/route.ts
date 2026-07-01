@@ -7,7 +7,7 @@ export async function GET(
 ) {
   try {
     const { gcId } = await params;
-    const participants = db.getVoiceParticipants(gcId);
+    const participants = await db.getVoiceParticipants(gcId);
     return NextResponse.json(participants);
   } catch (error) {
     console.error('Get voice participants error:', error);

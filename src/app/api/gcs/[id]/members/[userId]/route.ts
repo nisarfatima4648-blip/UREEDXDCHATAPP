@@ -8,7 +8,7 @@ export async function GET(
 ) {
   try {
     const { id, userId } = await params;
-    const member = db.getMember(id, userId);
+    const member = await db.getMember(id, userId);
     if (!member) {
       return NextResponse.json({ error: 'Member not found' }, { status: 404 });
     }
@@ -28,7 +28,7 @@ export async function PUT(
 ) {
   try {
     const { id, userId } = await params;
-    const member = db.getMember(id, userId);
+    const member = await db.getMember(id, userId);
     if (!member) {
       return NextResponse.json({ error: 'Member not found' }, { status: 404 });
     }
@@ -44,7 +44,7 @@ export async function PUT(
           { status: 400 }
         );
       }
-      db.updateMemberRole(id, userId, body.role);
+      await db.updateMemberRole(id, userId, body.role);
     }
 
     // Update permissions if provided
@@ -55,11 +55,11 @@ export async function PUT(
     if (body.canManageEmojis !== undefined) perms.can_manage_emojis = body.canManageEmojis;
 
     if (Object.keys(perms).length > 0) {
-      db.updateMemberPermissions(id, userId, perms);
+      await db.updateMemberPermissions(id, userId, perms);
     }
 
     // Re-fetch the updated member with user info
-    const updatedMember = db.getMember(id, userId);
+    const updatedMember = await db.getMember(id, userId);
     return NextResponse.json(updatedMember);
   } catch (error) {
     console.error('Update GC member error:', error);
@@ -76,7 +76,7 @@ export async function DELETE(
 ) {
   try {
     const { id, userId } = await params;
-    const member = db.getMember(id, userId);
+    const member = await db.getMember(id, userId);
     if (!member) {
       return NextResponse.json({ error: 'Member not found' }, { status: 404 });
     }
@@ -89,7 +89,7 @@ export async function DELETE(
       );
     }
 
-    db.removeMember(id, userId);
+    await db.removeMember(id, userId);
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Remove GC member error:', error);

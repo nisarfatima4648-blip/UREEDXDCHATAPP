@@ -8,7 +8,7 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
-    const members = db.getGCMembers(id);
+    const members = await db.getGCMembers(id);
     return NextResponse.json(members);
   } catch (error) {
     console.error('Get GC members error:', error);
@@ -25,7 +25,7 @@ export async function POST(
 ) {
   try {
     const { id } = await params;
-    const gc = db.getGCById(id);
+    const gc = await db.getGCById(id);
     if (!gc) {
       return NextResponse.json({ error: 'Group chat not found' }, { status: 404 });
     }
@@ -41,7 +41,7 @@ export async function POST(
     }
 
     // Check if user is already a member
-    if (db.isMember(id, userId)) {
+    if (await db.isMember(id, userId)) {
       return NextResponse.json(
         { error: 'User is already a member' },
         { status: 409 }
@@ -49,14 +49,14 @@ export async function POST(
     }
 
     // Check if user is banned
-    if (db.isBanned(id, userId)) {
+    if (await db.isBanned(id, userId)) {
       return NextResponse.json(
         { error: 'User is banned from this group' },
         { status: 403 }
       );
     }
 
-    const member = db.addMember(id, userId, role || 'member');
+    const member = await db.addMember(id, userId, role || 'member');
     return NextResponse.json(member, { status: 201 });
   } catch (error) {
     console.error('Add GC member error:', error);

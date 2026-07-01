@@ -16,16 +16,16 @@ export async function GET(request: NextRequest) {
 
     // Fire all queries in parallel
     const [gcs, dms, friends, requests] = await Promise.all([
-      Promise.resolve(db.getUserGCs(userId)),
-      Promise.resolve(db.getUserDMs(userId)),
-      Promise.resolve(db.getFriends(userId)),
-      Promise.resolve(db.getPendingRequests(userId)),
+      Promise.resolve(await db.getUserGCs(userId)),
+      Promise.resolve(await db.getUserDMs(userId)),
+      Promise.resolve(await db.getFriends(userId)),
+      Promise.resolve(await db.getPendingRequests(userId)),
     ]);
 
     // Load all custom emojis for every GC the user is in
     const allGCEmojis: Record<string, any[]> = {};
     for (const gc of gcs) {
-      allGCEmojis[gc.id] = db.getGCEmojis(gc.id);
+      allGCEmojis[gc.id] = await db.getGCEmojis(gc.id);
     }
 
     return NextResponse.json({

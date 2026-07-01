@@ -7,12 +7,12 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-    const emoji = db.getEmojiById(id);
+    const emoji = await db.getEmojiById(id);
     if (!emoji) {
       return NextResponse.json({ error: 'Emoji not found' }, { status: 404 });
     }
 
-    db.removeEmoji(id);
+    await db.removeEmoji(id);
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Remove emoji error:', error);

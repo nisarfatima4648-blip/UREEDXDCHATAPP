@@ -7,7 +7,7 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
-    const message = db.getMessageById(id);
+    const message = await db.getMessageById(id);
     if (!message) {
       return NextResponse.json({ error: 'Message not found' }, { status: 404 });
     }
@@ -27,7 +27,7 @@ export async function PATCH(
 ) {
   try {
     const { id } = await params;
-    const message = db.getMessageById(id);
+    const message = await db.getMessageById(id);
     if (!message) {
       return NextResponse.json({ error: 'Message not found' }, { status: 404 });
     }
@@ -39,7 +39,7 @@ export async function PATCH(
       return NextResponse.json({ error: 'Content is required' }, { status: 400 });
     }
 
-    const updated = db.updateMessageContent(id, content.trim());
+    const updated = await db.updateMessageContent(id, content.trim());
 
     // Notify via the chat-service socket
     try {
@@ -76,7 +76,7 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-    const message = db.getMessageById(id);
+    const message = await db.getMessageById(id);
     if (!message) {
       return NextResponse.json({ error: 'Message not found' }, { status: 404 });
     }
@@ -98,7 +98,7 @@ export async function DELETE(
       // non-critical: socket notification failed
     }
 
-    db.deleteMessage(id);
+    await db.deleteMessage(id);
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Delete message error:', error);

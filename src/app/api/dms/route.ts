@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const dms = db.getUserDMs(userId);
+    const dms = await db.getUserDMs(userId);
     return NextResponse.json(dms);
   } catch (error) {
     console.error('Get DMs error:', error);

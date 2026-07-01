@@ -8,7 +8,7 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
-    const gc = db.getGCById(id);
+    const gc = await db.getGCById(id);
     if (!gc) {
       return NextResponse.json({ error: 'Group chat not found' }, { status: 404 });
     }
@@ -28,7 +28,7 @@ export async function PUT(
 ) {
   try {
     const { id } = await params;
-    const gc = db.getGCById(id);
+    const gc = await db.getGCById(id);
     if (!gc) {
       return NextResponse.json({ error: 'Group chat not found' }, { status: 404 });
     }
@@ -40,9 +40,9 @@ export async function PUT(
     if (body.description !== undefined) data.description = body.description;
     if (body.iconUrl !== undefined) data.icon_url = body.iconUrl;
 
-    const updatedGC = db.updateGC(id, data);
+    const updatedGC = await db.updateGC(id, data);
     // Re-fetch to include member_count
-    const gcWithCount = db.getGCById(id);
+    const gcWithCount = await db.getGCById(id);
     return NextResponse.json(gcWithCount);
   } catch (error) {
     console.error('Update GC error:', error);
@@ -59,12 +59,12 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-    const gc = db.getGCById(id);
+    const gc = await db.getGCById(id);
     if (!gc) {
       return NextResponse.json({ error: 'Group chat not found' }, { status: 404 });
     }
 
-    db.deleteGC(id);
+    await db.deleteGC(id);
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Delete GC error:', error);

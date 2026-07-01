@@ -14,7 +14,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Check if username already exists
-    const existing = db.getUserByUsername(username);
+    const existing = await db.getUserByUsername(username);
     if (existing) {
       return NextResponse.json(
         { error: 'Username already taken' },
@@ -25,10 +25,10 @@ export async function POST(request: NextRequest) {
     const id = crypto.randomUUID();
     // Auto-generate a placeholder email if not provided
     const userEmail = email || `${username}@gc.local`;
-    const user = db.createUser(id, username, displayName, userEmail);
-    db.updateUserStatus(id, 'online');
+    const user = await db.createUser(id, username, displayName, userEmail);
+    await db.updateUserStatus(id, 'online');
 
-    const updatedUser = db.getUserById(id);
+    const updatedUser = await db.getUserById(id);
     return NextResponse.json(updatedUser, { status: 201 });
   } catch (error) {
     console.error('Register error:', error);

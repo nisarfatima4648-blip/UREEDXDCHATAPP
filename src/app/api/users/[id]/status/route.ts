@@ -8,7 +8,7 @@ export async function PUT(
 ) {
   try {
     const { id } = await params;
-    const user = db.getUserById(id);
+    const user = await db.getUserById(id);
     if (!user) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 });
     }
@@ -23,7 +23,7 @@ export async function PUT(
       );
     }
 
-    const updatedUser = db.updateUserStatus(id, body.status);
+    const updatedUser = await db.updateUserStatus(id, body.status);
     return NextResponse.json(updatedUser);
   } catch (error) {
     console.error('Update status error:', error);

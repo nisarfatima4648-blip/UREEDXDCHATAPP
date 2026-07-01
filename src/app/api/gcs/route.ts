@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const gcs = db.getUserGCs(userId);
+    const gcs = await db.getUserGCs(userId);
     return NextResponse.json(gcs);
   } catch (error) {
     console.error('Get GCs error:', error);
@@ -37,13 +37,13 @@ export async function POST(request: NextRequest) {
     }
 
     const id = crypto.randomUUID();
-    const gc = db.createGC(id, name, ownerId, description, iconUrl);
+    const gc = await db.createGC(id, name, ownerId, description, iconUrl);
 
     // Add the owner as a member with 'owner' role
-    db.addMember(id, ownerId, 'owner');
+    await db.addMember(id, ownerId, 'owner');
 
     // Re-fetch to include member_count
-    const gcWithCount = db.getGCById(id);
+    const gcWithCount = await db.getGCById(id);
     return NextResponse.json(gcWithCount, { status: 201 });
   } catch (error) {
     console.error('Create GC error:', error);
