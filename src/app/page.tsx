@@ -89,7 +89,6 @@ export default function AppPage() {
         }
       }
     } catch (err) {
-      console.error('Failed to initialize data:', err)
     }
   }, [])
 

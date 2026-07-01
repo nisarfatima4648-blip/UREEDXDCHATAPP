@@ -283,7 +283,6 @@ export function VoiceChannel({ gcId }: VoiceChannelProps) {
           ? event.streams[0]
           : new MediaStream([event.track])
 
-        console.log('[VC] ontrack fired for', targetUserId, 'track:', event.track.kind, 'enabled:', event.track.enabled, 'readyState:', event.track.readyState)
 
         // Create or update audio element for playback
         let audioEl = remoteAudioElsRef.current.get(targetUserId)
@@ -311,9 +310,7 @@ export function VoiceChannel({ gcId }: VoiceChannelProps) {
           // Ensure element is not muted (deafen state may have flipped it)
           if (!audioEl.muted) audioEl.muted = false
           audioEl.play().then(() => {
-            console.log('[VC] Remote audio playing for', targetUserId, 'attempt', attempt)
           }).catch(async (err) => {
-            console.warn('[VC] play() failed for', targetUserId, 'attempt', attempt, err?.name)
             if (attempt < 5) {
               await new Promise(r => setTimeout(r, 250))
               playRemote(attempt + 1)
@@ -355,7 +352,6 @@ export function VoiceChannel({ gcId }: VoiceChannelProps) {
 
       // Handle connection state
       pc.onconnectionstatechange = () => {
-        console.log('[VC] Peer', targetUserId, 'connectionState:', pc.connectionState, 'iceState:', pc.iceConnectionState)
         setPeerConnectionStates((prev) => ({ ...prev, [targetUserId]: pc.connectionState }))
         if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
           const analyser = remoteAnalysersRef.current.get(targetUserId)
@@ -385,10 +381,8 @@ export function VoiceChannel({ gcId }: VoiceChannelProps) {
 
       // Track ICE gathering/connection for diagnostics
       pc.onicegatheringstatechange = () => {
-        console.log('[VC] Peer', targetUserId, 'ICE gathering:', pc.iceGatheringState)
       }
       pc.oniceconnectionstatechange = () => {
-        console.log('[VC] Peer', targetUserId, 'ICE connection:', pc.iceConnectionState)
       }
 
       if (shouldCreateOffer) {
@@ -396,13 +390,11 @@ export function VoiceChannel({ gcId }: VoiceChannelProps) {
         try {
           const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: false })
           await pc.setLocalDescription(offer)
-          console.log('[VC] Sending offer to', targetUserId, 'SDP len:', pc.localDescription?.sdp?.length)
           sendVCSignal(gcId, targetUserId, {
             type: 'offer',
             sdp: pc.localDescription?.sdp,
           })
         } catch (err) {
-          console.error('[VC] Failed to create offer:', err)
           peersRef.current.delete(targetUserId)
           offeredPeersRef.current.delete(targetUserId)
         }
@@ -417,14 +409,12 @@ export function VoiceChannel({ gcId }: VoiceChannelProps) {
       if (data.gcId !== gcId) return
       const { fromUserId, signal } = data
 
-      console.log('[VC] Signal received:', signal.type, 'from:', fromUserId)
 
       if (signal.type === 'offer') {
         // Incoming offer — create peer (no offer) and send answer
         createPeerConnection(fromUserId, false).then(async () => {
           const pc = peersRef.current.get(fromUserId)
           if (!pc) {
-            console.warn('[VC] No peer connection after create for', fromUserId)
             return
           }
 
@@ -432,27 +422,22 @@ export function VoiceChannel({ gcId }: VoiceChannelProps) {
             await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: signal.sdp }))
             const answer = await pc.createAnswer()
             await pc.setLocalDescription(answer)
-            console.log('[VC] Sending answer to', fromUserId, 'SDP len:', pc.localDescription?.sdp?.length)
             sendVCSignal(gcId, fromUserId, {
               type: 'answer',
               sdp: pc.localDescription?.sdp,
             })
           } catch (err) {
-            console.error('[VC] Failed to handle offer:', err)
           }
         })
       } else if (signal.type === 'answer') {
         const pc = peersRef.current.get(fromUserId)
         if (!pc) {
-          console.warn('[VC] Answer received but no peer for', fromUserId)
           return
         }
 
         try {
           await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: signal.sdp }))
-          console.log('[VC] Answer set for', fromUserId)
         } catch (err) {
-          console.error('[VC] Failed to handle answer:', err)
         }
       } else if (signal.type === 'ice-candidate' && signal.candidate) {
         const pc = peersRef.current.get(fromUserId)
@@ -583,7 +568,6 @@ export function VoiceChannel({ gcId }: VoiceChannelProps) {
           return
         }
         localStreamRef.current = stream
-        console.log('[VC] Got local stream, audio tracks:', stream.getAudioTracks().length, stream.getAudioTracks().map(t => `enabled=${t.enabled} ready=${t.readyState} label=${t.label}`), 'noiseSuppression:', isNoiseSuppressionEnabled())
 
         // Set up local speaking detection
         const audioCtx = new AudioContext()
@@ -606,7 +590,6 @@ export function VoiceChannel({ gcId }: VoiceChannelProps) {
         }
       } catch (err) {
         if (aborted) return
-        console.error('[VC] Failed to set up WebRTC:', err)
         setConnectionStatus('connected') // Still show as connected for presence, just no audio
       }
 

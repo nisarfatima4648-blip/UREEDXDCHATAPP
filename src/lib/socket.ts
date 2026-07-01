@@ -3,7 +3,7 @@
 import { io, Socket } from 'socket.io-client'
 import type { Message } from '@/lib/database'
 
-// In production (Vercel), use the deployed chat-service URL (Railway).
+// In production (Vercel), use the deployed chat-service URL.
 // In dev, use the local gateway with XTransformPort.
 const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL || '/?XTransformPort=3003'
 
@@ -15,12 +15,8 @@ let pendingQueue: { event: string; data: any }[] = []
 
 export function getSocket(): Socket {
   if (!socket) {
-    console.log('[socket] Creating socket.io instance, URL:', SOCKET_URL, 'path: /')
     socket = io(SOCKET_URL, {
       path: '/',
-      // Allow both transports — websocket is essential for low-latency WebRTC
-      // signaling (ICE candidates, offers/answers). Polling alone causes
-      // delayed/batched signal delivery which breaks voice channels & DM calls.
       transports: ['polling', 'websocket'],
       upgrade: true,
       reconnection: true,
@@ -30,33 +26,21 @@ export function getSocket(): Socket {
     })
 
     socket.on('connect', () => {
-      console.log('[socket] CONNECTED, id:', socket!.id)
-      // Reset auth state on every new connection
       authenticated = false
       if (lastUserId) {
-        console.log('[socket] Emitting auth for user:', lastUserId)
         socket!.emit('auth', { userId: lastUserId })
       }
     })
 
-    // Mark as authenticated only when server confirms
     socket.on('auth:success', () => {
-      console.log('[socket] Auth confirmed by server')
       authenticated = true
-      // Flush any queued events
       while (pendingQueue.length > 0) {
         const { event, data } = pendingQueue.shift()!
-        console.log('[socket] Flushing queued event:', event)
         socket!.emit(event, data)
       }
     })
 
-    socket.on('connect_error', (err) => {
-      console.error('[socket] CONNECT ERROR:', err.message)
-    })
-
-    socket.on('disconnect', (reason) => {
-      console.warn('[socket] DISCONNECTED:', reason)
+    socket.on('disconnect', () => {
       authenticated = false
     })
   }
@@ -67,7 +51,6 @@ export function getSocket(): Socket {
 function emit(event: string, data: any): void {
   const s = getSocket()
   if (!authenticated || !s.connected) {
-    console.log('[socket] Queuing event (not authed):', event)
     pendingQueue.push({ event, data })
   } else {
     s.emit(event, data)
@@ -82,7 +65,6 @@ export function connectSocket(userId: string): void {
   if (s.connected) {
     s.emit('auth', { userId })
   }
-  // If not connected, the 'connect' listener above will handle auth
 }
 
 export function disconnectSocket(): void {

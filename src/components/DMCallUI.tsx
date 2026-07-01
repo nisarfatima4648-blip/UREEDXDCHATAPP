@@ -6,7 +6,6 @@ import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { useAppStore } from '@/lib/store'
 import { answerCall, declineCall, hangUpCall, sendDMCallSignal, onSocketEvent, offSocketEvent } from '@/lib/socket'
-import { NoiseSuppressor, createProcessedStream } from '@/lib/noise-suppressor'
 import {
   Phone,
   PhoneOff,
@@ -122,7 +121,6 @@ function playRingtone() {
     // Safety: force-stop after max duration (prevents infinite ringing if a
     // connected/ended/declined event is lost in transit)
     ringtoneSafetyTimeout = setTimeout(() => {
-      console.warn('[DM Call] Ringtone safety timeout reached — force stopping')
       stopRingtone()
     }, RINGTONE_MAX_DURATION_MS)
   } catch {
@@ -192,7 +190,8 @@ const ICE_CONFIG: RTCConfiguration = {
   iceTransportPolicy: 'all',
 }
 
-// Audio constraints — browser built-in echo cancellation + noise suppression
+// Audio constraints — uses browser-native DSP (echo cancellation, noise suppression).
+// The track from getUserMedia is a NATIVE track that always works with WebRTC.
 const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
   audio: {
     echoCancellation: true,
@@ -204,8 +203,6 @@ const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
 
 // Module-level WebRTC state (singleton — only one DM call at a time)
 let dmLocalStream: MediaStream | null = null
-let dmRawStream: MediaStream | null = null // original mic stream (before noise processing)
-let dmNoiseSuppressor: NoiseSuppressor | null = null
 let dmPeerConnection: RTCPeerConnection | null = null
 let dmRemoteAudioEl: HTMLAudioElement | null = null
 let dmIsMuted = false
@@ -221,21 +218,10 @@ function cleanupDMCall() {
     dmPeerConnection = null
   }
 
-  // Destroy the noise suppressor (closes its AudioContext + revokes blob URL)
-  if (dmNoiseSuppressor) {
-    dmNoiseSuppressor.destroy()
-    dmNoiseSuppressor = null
-  }
-
-  // Stop local stream (the processed stream's tracks)
+  // Stop local stream tracks (native getUserMedia stream)
   if (dmLocalStream) {
     dmLocalStream.getTracks().forEach((t) => t.stop())
     dmLocalStream = null
-  }
-  // Stop the RAW mic stream tracks too (they're separate from the processed stream)
-  if (dmRawStream) {
-    dmRawStream.getTracks().forEach((t) => t.stop())
-    dmRawStream = null
   }
   // Clear any in-flight capture promise so the next call starts fresh
   dmLocalStreamPromise = null
@@ -271,22 +257,13 @@ async function setupLocalStream(): Promise<MediaStream | null> {
 
   dmLocalStreamPromise = (async () => {
     try {
-      // Capture raw mic stream
-      const rawStream = await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS)
-      dmRawStream = rawStream
-      console.log('[DM Call] Got raw mic stream, tracks:', rawStream.getTracks().length, rawStream.getAudioTracks().map(t => `${t.kind}:${t.enabled}:${t.readyState}:${t.label}`))
-
-      // ── Noise suppression pipeline ──────────────────────────────────
-      // Route the raw mic through the NoiseSuppressor (AudioWorklet noise gate
-      // + high-pass filter + compressor) and use the PROCESSED stream for
-      // WebRTC. If noise suppression is disabled or fails, fall back to raw.
-      const { suppressor, stream: processedStream } = await createProcessedStream(rawStream)
-      dmNoiseSuppressor = suppressor
-      dmLocalStream = processedStream
-      console.log('[DM Call] Local stream ready for WebRTC. Noise suppression:', !!suppressor, 'tracks:', processedStream.getAudioTracks().length)
-      return processedStream
+      // Use browser-native getUserMedia with noise suppression constraints.
+      // The track from getUserMedia is a NATIVE track that always works with
+      // WebRTC — no AudioContext suspension issues, no silence bugs.
+      const stream = await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS)
+      dmLocalStream = stream
+      return stream
     } catch (err) {
-      console.error('[DM Call] Failed to get microphone:', err)
       return null
     } finally {
       dmLocalStreamPromise = null
@@ -297,11 +274,7 @@ async function setupLocalStream(): Promise<MediaStream | null> {
 
 function setDMCallMuted(muted: boolean) {
   dmIsMuted = muted
-  // Use the NoiseSuppressor's smooth mute (linear ramp, no clicks) if available
-  if (dmNoiseSuppressor) {
-    dmNoiseSuppressor.setMuted(muted)
-  }
-  // Also toggle track.enabled as a fallback / for raw stream mode
+  // Toggle track.enabled on the native getUserMedia stream
   if (dmLocalStream) {
     dmLocalStream.getAudioTracks().forEach((track) => {
       track.enabled = !muted
@@ -339,9 +312,7 @@ function ensureRemoteAudioAndPlay(stream: MediaStream) {
       dmRemoteAudioEl.volume = 1
     }
     dmRemoteAudioEl.play().then(() => {
-      console.log('[DM Call] Remote audio playing, attempt', attempt)
     }).catch(async (e) => {
-      console.warn('[DM Call] play() failed (attempt', attempt + '):', e?.name)
       if (attempt < 5) {
         await new Promise(r => setTimeout(r, 250))
         tryPlay(attempt + 1)
@@ -362,17 +333,14 @@ function ensureRemoteAudioAndPlay(stream: MediaStream) {
 async function createOffer(dmConversationId: string, targetUserId: string): Promise<void> {
   const stream = dmLocalStream
   if (!stream) {
-    console.error('[DM Call] createOffer: no local stream')
     return
   }
 
   // Guard against double-calling
   if (dmPeerConnection) {
-    console.warn('[DM Call] createOffer: peer connection already exists')
     return
   }
   dmSignalingState = 'creating-offer'
-  console.log('[DM Call] Creating offer for', targetUserId, 'local tracks:', stream.getTracks().length)
 
   try {
     const pc = new RTCPeerConnection(ICE_CONFIG)
@@ -385,7 +353,6 @@ async function createOffer(dmConversationId: string, targetUserId: string): Prom
 
     // Handle remote audio
     pc.ontrack = (event) => {
-      console.log('[DM Call] ontrack fired, track:', event.track.kind, 'streams:', event.streams.length)
       // Use event.streams[0] if available, otherwise create a new stream from the track
       const remoteStream = event.streams && event.streams[0]
         ? event.streams[0]
@@ -405,7 +372,6 @@ async function createOffer(dmConversationId: string, targetUserId: string): Prom
 
     // Handle connection state
     pc.onconnectionstatechange = () => {
-      console.log('[DM Call] Connection state:', pc.connectionState, 'ICE:', pc.iceConnectionState)
       if (pc.connectionState === 'connected') {
         dmSignalingState = 'connected'
       } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
@@ -422,14 +388,12 @@ async function createOffer(dmConversationId: string, targetUserId: string): Prom
     await pc.setLocalDescription(offer)
     dmSignalingState = 'waiting-answer'
 
-    console.log('[DM Call] Sending offer, SDP length:', pc.localDescription?.sdp?.length)
 
     sendDMCallSignal(dmConversationId, targetUserId, {
       type: 'offer',
       sdp: pc.localDescription?.sdp,
     })
   } catch (err) {
-    console.error('[DM Call] Failed to create offer:', err)
     dmSignalingState = 'idle'
     if (dmPeerConnection) {
       try { dmPeerConnection.close() } catch { /* ok */ }
@@ -445,17 +409,13 @@ async function handleAnswer(data: any): Promise<void> {
 
   // Guard: only set remote description if we're in waiting-answer state
   if (dmSignalingState !== 'waiting-answer') {
-    console.warn('[DM Call] Ignoring answer — not in waiting-answer state:', dmSignalingState)
     return
   }
 
   try {
-    console.log('[DM Call] Received answer, SDP length:', data.signal.sdp?.length)
     await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.signal.sdp }))
     dmSignalingState = 'connected'
-    console.log('[DM Call] Answer set successfully, waiting for ICE connection...')
   } catch (err) {
-    console.error('[DM Call] Failed to set remote description (answer):', err)
   }
 }
 
@@ -463,22 +423,18 @@ async function handleAnswer(data: any): Promise<void> {
 async function handleIncomingOffer(dmConversationId: string, fromUserId: string, signal: any): Promise<void> {
   // Guard: don't handle if we already have a peer connection or are signaling
   if (dmPeerConnection) {
-    console.warn('[DM Call] Ignoring offer — peer connection already exists')
     return
   }
   if (dmSignalingState !== 'idle') {
-    console.warn('[DM Call] Ignoring offer — not in idle state:', dmSignalingState)
     return
   }
 
   const stream = dmLocalStream
   if (!stream) {
-    console.warn('[DM Call] No local stream when receiving offer')
     return
   }
 
   dmSignalingState = 'handling-offer'
-  console.log('[DM Call] Handling incoming offer from', fromUserId, 'local tracks:', stream.getTracks().length)
 
   try {
     const pc = new RTCPeerConnection(ICE_CONFIG)
@@ -491,7 +447,6 @@ async function handleIncomingOffer(dmConversationId: string, fromUserId: string,
 
     // Handle remote audio
     pc.ontrack = (event) => {
-      console.log('[DM Call] ontrack fired (callee), track:', event.track.kind, 'streams:', event.streams.length)
       const remoteStream = event.streams && event.streams[0]
         ? event.streams[0]
         : new MediaStream([event.track])
@@ -510,7 +465,6 @@ async function handleIncomingOffer(dmConversationId: string, fromUserId: string,
 
     // Handle connection state
     pc.onconnectionstatechange = () => {
-      console.log('[DM Call] (callee) Connection state:', pc.connectionState, 'ICE:', pc.iceConnectionState)
       if (pc.connectionState === 'connected') {
         dmSignalingState = 'connected'
       } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
@@ -525,7 +479,6 @@ async function handleIncomingOffer(dmConversationId: string, fromUserId: string,
     const answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
 
-    console.log('[DM Call] Sending answer, SDP length:', pc.localDescription?.sdp?.length)
 
     sendDMCallSignal(dmConversationId, fromUserId, {
       type: 'answer',
@@ -534,7 +487,6 @@ async function handleIncomingOffer(dmConversationId: string, fromUserId: string,
 
     dmSignalingState = 'connected'
   } catch (err) {
-    console.error('[DM Call] Failed to handle incoming offer:', err)
     dmSignalingState = 'idle'
     if (dmPeerConnection) {
       try { dmPeerConnection.close() } catch { /* ok */ }
@@ -829,17 +781,14 @@ function ActiveCallBar() {
     const run = async () => {
       // Ensure we have a local stream before attempting to create the offer
       if (!dmLocalStream) {
-        console.log('[DM Call] Caller: no local stream yet, setting up before offer...')
         await setupLocalStream()
       }
       if (cancelled) return
       if (!dmLocalStream) {
-        console.error('[DM Call] Caller: still no local stream after setup — cannot create offer')
         return
       }
       if (dmPeerConnection || dmSignalingState !== 'idle') return // created concurrently
       createOffer(activeCall.dmConversationId, activeCall.callerId).catch((err) => {
-        console.error('[DM Call] Failed to create offer:', err)
       })
     }
     run()
@@ -917,12 +866,10 @@ function ActiveCallBar() {
 
           {/* Right: controls */}
           <div className="flex items-center gap-1.5">
-            {/* Noise suppression indicator */}
-            {dmNoiseSuppressor && (
-              <div className="flex items-center gap-1 px-2 h-8 rounded-full bg-emerald-500/10 border border-emerald-500/20" title="Noise suppression active">
-                <AudioWaveform className="w-3.5 h-3.5 text-emerald-400" />
-              </div>
-            )}
+            {/* Noise suppression indicator — always shown (native browser NS is always on) */}
+            <div className="flex items-center gap-1 px-2 h-8 rounded-full bg-emerald-500/10 border border-emerald-500/20" title="Noise suppression active">
+              <AudioWaveform className="w-3.5 h-3.5 text-emerald-400" />
+            </div>
 
             {/* Mute/Unmute */}
             <Button
@@ -988,7 +935,6 @@ export function DMCallUI() {
   // ─── Socket listeners for DM call incoming/connected/ended (self-contained) ─
   useEffect(() => {
     const onIncoming = (data: any) => {
-      console.log('[DMCallUI] dm:call:incoming received:', data)
       const s = useAppStore.getState()
       s.setIncomingCall({
         dmConversationId: data.dmConversationId,
@@ -999,7 +945,6 @@ export function DMCallUI() {
     }
 
     const onConnected = (data: any) => {
-      console.log('[DMCallUI] dm:call:connected received:', data)
       stopRingtone()
       const s = useAppStore.getState()
       const existingCall = s.activeCall
@@ -1017,7 +962,6 @@ export function DMCallUI() {
     }
 
     const onEnded = (data: any) => {
-      console.log('[DMCallUI] dm:call:ended received:', data)
       stopRingtone()
       cleanupDMCall()
       const s = useAppStore.getState()
@@ -1043,23 +987,19 @@ export function DMCallUI() {
     const handler = async (data: any) => {
       const { fromUserId, dmConversationId, signal } = data
 
-      console.log('[DM Call] Signal received:', signal.type, 'from:', fromUserId, 'conv:', dmConversationId)
 
       // Only handle signals for our active call
       const currentCall = useAppStore.getState().activeCall
       if (!currentCall) {
-        console.warn('[DM Call] Signal ignored — no active call')
         return
       }
       if (currentCall.dmConversationId !== dmConversationId) {
-        console.warn('[DM Call] Signal ignored — conv mismatch:', currentCall.dmConversationId, '!=', dmConversationId)
         return
       }
 
       if (signal.type === 'offer') {
         // Callee receives offer from caller
         if (!dmLocalStream) {
-          console.log('[DM Call] No local stream yet, setting up...')
           await setupLocalStream()
         }
         await handleIncomingOffer(dmConversationId, fromUserId, signal)
