@@ -504,10 +504,10 @@ export default function AppPage() {
           <div className="flex-1 text-center">
             <span className="font-semibold text-sm text-foreground">
               {selectedGCId
-                ? userGCs.find((g) => g.id === selectedGCId)?.name || 'UREEDXDCHAT'
+                ? userGCs.find((g) => g.id === selectedGCId)?.name || 'UREEDXD'
                 : selectedDMConversationId
                   ? 'Direct Message'
-                  : 'UREEDXDCHAT'}
+                  : 'UREEDXD'}
             </span>
           </div>
           <div className="flex items-center gap-1">
@@ -555,7 +555,7 @@ export default function AppPage() {
                 <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
               </svg>
             </div>
-            <h1 className="text-2xl font-bold">Welcome to UREEDXDCHAT!</h1>
+            <h1 className="text-2xl font-bold">Welcome to UREEDXD!</h1>
             <p className="text-muted-foreground text-center max-w-md">
               Select a group chat or start a direct message to begin chatting.
               Create a new group or find friends to get started.

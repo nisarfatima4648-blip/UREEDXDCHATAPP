@@ -30,7 +30,7 @@ function LoadingScreen() {
           className="w-16 h-16 rounded-full border-4 border-emerald-500/30 border-t-emerald-500"
         />
         <div className="text-center">
-          <h1 className="text-2xl font-bold text-foreground">UREEDXDCHAT</h1>
+          <h1 className="text-2xl font-bold text-foreground">UREEDXD</h1>
           <p className="mt-1 text-sm text-muted-foreground">Loading everything...</p>
         </div>
       </motion.div>
@@ -183,11 +183,11 @@ export function LoginView() {
             {/* Logo / Title */}
             <div className="mb-6 flex flex-col items-center gap-3">
               <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-600/20 shadow-lg overflow-hidden">
-                <img src="/favicon.png" alt="UREEDXDCHAT" className="h-full w-full object-cover rounded-2xl" />
+                <img src="/ureedxd-logo.png" alt="UREEDXD" className="h-full w-full object-cover rounded-2xl" />
               </div>
               <div className="text-center">
                 <h1 className="text-2xl font-bold text-white tracking-tight">
-                  UREEDXDCHAT
+                  UREEDXD
                 </h1>
                 <p className="mt-1 text-sm text-slate-400">
                   Chat with your friends and communities

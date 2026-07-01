@@ -175,11 +175,13 @@ function SidebarContent({
       {/* ─── Top: App Logo ──────────────────────────────────────────── */}
       <div className="flex h-12 items-center px-3">
         <div className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-600 text-white font-bold text-sm">
-            GC
-          </div>
+          <img
+            src="/ureedxd-logo.png"
+            alt="UREEDXD"
+            className="h-8 w-8 rounded-lg object-cover"
+          />
           <span className="hidden text-base font-bold text-sidebar-foreground sm:block">
-            GroupChat
+            UREEDXD
           </span>
         </div>
       </div>
