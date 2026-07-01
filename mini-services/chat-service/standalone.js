@@ -188,14 +188,22 @@ const db = {
 const httpServer = createServer();
 const io = new Server(httpServer, {
   path: '/',
-  cors: { origin: '*', methods: ['GET', 'POST'] },
+  cors: {
+    // Return the requesting origin so credentials work (can't use '*' with credentials)
+    origin: (origin, callback) => callback(null, origin || '*'),
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true,
+  },
+  allowEIO3: true,
   pingTimeout: 60000,
   pingInterval: 25000,
 });
 
 const socketToUser = new Map();
 const userToSocket = new Map();
-const PORT = process.env.PORT || 3003;
+// WispByte sets PORT env var (e.g., 14126). Fall back to 3003 for local dev.
+const PORT = process.env.PORT || process.env.SERVER_PORT || 3003;
 
 function getUserId(socket) { return socketToUser.get(socket.id); }
 function getSocketByUser(userId) {
