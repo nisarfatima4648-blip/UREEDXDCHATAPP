@@ -1498,8 +1498,10 @@ export function ChatView({ onOpenGCSettings, onAddMember }: ChatViewProps = {}) 
         </div>
       </header>
 
-      {/* ─── Voice Channel Banner (only when viewing the GC the user is in VC for) ─── */}
-      {selectedGCId && activeVCGcId === selectedGCId && (
+      {/* ─── Voice Channel Banner ─────────────────────────────────────────── */}
+      {/* Always show in GC view so users can see/join VC. When the user is in
+          VC for a DIFFERENT GC, page.tsx shows a compact floating indicator. */}
+      {selectedGCId && (
         <VoiceChannel gcId={selectedGCId} showFull />
       )}
 
