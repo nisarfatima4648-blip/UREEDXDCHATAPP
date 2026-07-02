@@ -185,6 +185,25 @@ export default function AppPage() {
         }
       }
 
+      // ─── Auto-fetch DM conversation if it doesn't exist in sidebar ──────
+      // When a message arrives for a DM that's not in the user's DM list,
+      // fetch the conversation info and add it to the sidebar in real-time.
+      // This fixes the "new DM doesn't show until browser restart" bug.
+      if (normalized.dm_conversation_id) {
+        const s = useAppStore.getState()
+        if (!s.dmConversations.some(c => c.id === normalized.dm_conversation_id)) {
+          // DM not in sidebar — fetch it
+          fetch('/api/dms').then(r => r.ok ? r.json() : null).then(dms => {
+            if (Array.isArray(dms)) {
+              const newDM = dms.find((d: any) => d.id === normalized.dm_conversation_id)
+              if (newDM) {
+                useAppStore.getState().addDMConversation(newDM)
+              }
+            }
+          }).catch(() => {})
+        }
+      }
+
       useAppStore.getState().addMessage(normalized)
     }
 
