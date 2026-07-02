@@ -792,6 +792,7 @@ export function ChatView({ onOpenGCSettings, onAddMember }: ChatViewProps = {}) 
   const currentUserId = currentUser?.id // stable scalar for deps
   const selectedGCId = useAppStore((s) => s.selectedGCId)
   const selectedDMConversationId = useAppStore((s) => s.selectedDMConversationId)
+  const activeVCGcId = useAppStore((s) => s.activeVCGcId)
   const userGCs = useAppStore((s) => s.userGCs)
   const gcMembers = useAppStore((s) => s.gcMembers)
   const gcMessages = useAppStore((s) => selectedGCId ? s.gcMessages[selectedGCId] : undefined)
@@ -1497,8 +1498,10 @@ export function ChatView({ onOpenGCSettings, onAddMember }: ChatViewProps = {}) 
         </div>
       </header>
 
-      {/* ─── Voice Channel Banner ─────────────────────────────────────────── */}
-      {selectedGCId && <VoiceChannel gcId={selectedGCId} />}
+      {/* ─── Voice Channel Banner (only when viewing the GC the user is in VC for) ─── */}
+      {selectedGCId && activeVCGcId === selectedGCId && (
+        <VoiceChannel gcId={selectedGCId} showFull />
+      )}
 
       {/* ─── Message Area ────────────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col min-h-0 overflow-hidden">

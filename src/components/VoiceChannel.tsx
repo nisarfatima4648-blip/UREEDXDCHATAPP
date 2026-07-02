@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -185,12 +186,16 @@ function getAudioLevel(analyser: AnalyserNode): number {
 
 interface VoiceChannelProps {
   gcId: string
+  /** When false, shows a compact floating indicator instead of the full banner */
+  showFull?: boolean
 }
 
-export function VoiceChannel({ gcId }: VoiceChannelProps) {
+export function VoiceChannel({ gcId, showFull = true }: VoiceChannelProps) {
   const currentUser = useAppStore((s) => s.currentUser)
   const voiceParticipants = useAppStore((s) => s.voiceParticipants[gcId]) || []
   const removeVoiceParticipant = useAppStore((s) => s.removeVoiceParticipant)
+  const setActiveVCGcId = useAppStore((s) => s.setActiveVCGcId)
+  const userGCs = useAppStore((s) => s.userGCs)
 
   const isConnected = voiceParticipants.some((p) => p.user_id === currentUser?.id)
 
@@ -625,8 +630,9 @@ export function VoiceChannel({ gcId }: VoiceChannelProps) {
   // ─── Handle Join ──────────────────────────────────────────────────────────
   const handleJoin = useCallback(() => {
     setConnectionStatus('connecting')
+    setActiveVCGcId(gcId)
     joinVC(gcId)
-  }, [gcId])
+  }, [gcId, setActiveVCGcId])
 
   // ─── Handle Leave ─────────────────────────────────────────────────────────
   const handleLeave = useCallback(() => {
@@ -636,8 +642,9 @@ export function VoiceChannel({ gcId }: VoiceChannelProps) {
     }
     cleanupWebRTC()
     setConnectionStatus('disconnected')
+    setActiveVCGcId(null)
     leaveVC(gcId)
-  }, [gcId, currentUser?.id, removeVoiceParticipant, cleanupWebRTC])
+  }, [gcId, currentUser?.id, removeVoiceParticipant, cleanupWebRTC, setActiveVCGcId])
 
   // ─── Handle Mute/Unmute ───────────────────────────────────────────────────
   const handleMuteToggle = useCallback(() => {
@@ -652,6 +659,37 @@ export function VoiceChannel({ gcId }: VoiceChannelProps) {
       })
     }
   }, [isMuted])
+
+  // When not showing full UI and user is connected, render a compact floating indicator
+  if (!showFull && isConnected) {
+    const gcName = userGCs.find(g => g.id === gcId)?.name || 'Voice'
+    return createPortal(
+      <div className="fixed top-4 right-4 z-[90] pointer-events-auto">
+        <div className="flex items-center gap-2 rounded-full bg-[#1e1f22] border border-green-500/30 shadow-lg px-3 py-1.5">
+          <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+          <span className="text-xs font-medium text-green-400">{gcName}</span>
+          <span className="text-[10px] text-muted-foreground">·</span>
+          <span className="text-[10px] text-muted-foreground">{voiceParticipants.length} in VC</span>
+          <button
+            onClick={handleMuteToggle}
+            className={cn('ml-1 p-1 rounded-md transition-colors', isMuted ? 'text-red-400 hover:bg-red-500/10' : 'text-muted-foreground hover:bg-accent')}
+          >
+            {isMuted ? <MicOff className="size-3" /> : <Mic className="size-3" />}
+          </button>
+          <button
+            onClick={handleLeave}
+            className="p-1 rounded-md text-red-400 hover:bg-red-500/10 transition-colors"
+          >
+            <PhoneOff className="size-3" />
+          </button>
+        </div>
+      </div>,
+      document.body
+    )
+  }
+
+  // Don't render the full banner if showFull is false
+  if (!showFull) return null
 
   return (
     <div

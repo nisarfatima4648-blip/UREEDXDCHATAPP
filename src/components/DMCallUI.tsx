@@ -825,9 +825,9 @@ function ActiveCallBar() {
   if (!activeCall || activeCall.status !== 'connected') return null
 
   return createPortal(
-    <div className="fixed bottom-0 left-0 right-0 z-[100]">
+    <div className="fixed bottom-0 left-0 right-0 z-[100] pointer-events-none">
       <div className="mx-auto max-w-lg">
-        <div className="mx-3 mb-3 flex items-center justify-between rounded-xl bg-[#1e1f22] border border-white/10 shadow-xl px-4 py-3">
+        <div className="mx-3 mb-3 flex items-center justify-between rounded-xl bg-[#1e1f22] border border-white/10 shadow-xl px-4 py-3 pointer-events-auto">
           {/* Left: caller info + duration */}
           <div className="flex items-center gap-3 min-w-0">
             <div className="relative shrink-0">

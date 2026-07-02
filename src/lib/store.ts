@@ -65,6 +65,7 @@ interface AppState {
   onlineUsers: string[]
   typingUsers: Record<string, string[]>
   voiceParticipants: Record<string, VoiceSession[]>
+  activeVCGcId: string | null  // GC ID where the user is currently in voice (persists across navigation)
   customEmojis: Record<string, CustomEmoji[]>
 
   // Notifications
@@ -137,6 +138,7 @@ interface AppState {
   setVoiceParticipants: (gcId: string, participants: VoiceSession[]) => void
   addVoiceParticipant: (gcId: string, session: VoiceSession) => void
   removeVoiceParticipant: (gcId: string, userId: string) => void
+  setActiveVCGcId: (gcId: string | null) => void
 
   // ─── Custom Emoji Actions ───────────────────────────────────────────────
   setCustomEmojis: (gcId: string, emojis: CustomEmoji[]) => void
@@ -181,6 +183,7 @@ const initialState = {
   onlineUsers: [] as string[],
   typingUsers: {},
   voiceParticipants: {},
+  activeVCGcId: null,
   customEmojis: {},
   activeCall: null,
   incomingCall: null,
@@ -632,6 +635,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         ),
       },
     })),
+
+  setActiveVCGcId: (gcId) =>
+    set({ activeVCGcId: gcId }),
 
   // ─── Custom Emoji Actions ───────────────────────────────────────────────
 

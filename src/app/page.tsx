@@ -28,6 +28,7 @@ const GCSettingsDialog = dynamic(() => import('@/components/GCSettingsDialog'), 
 const ProfileDialog = dynamic(() => import('@/components/ProfileDialog'), { ssr: false })
 const AddMemberDialog = dynamic(() => import('@/components/AddMemberDialog'), { ssr: false })
 const DMCallUI = dynamic(() => import('@/components/DMCallUI').then(m => ({ default: m.DMCallUI })), { ssr: false })
+const VoiceChannel = dynamic(() => import('@/components/VoiceChannel').then(m => ({ default: m.VoiceChannel })), { ssr: false })
 
 // ─── Main Application Page ─────────────────────────────────────────────────
 
@@ -41,6 +42,7 @@ export default function AppPage() {
   const sidebarOpen = useAppStore((s) => s.sidebarOpen)
   const rightPanelOpen = useAppStore((s) => s.rightPanelOpen)
   const userGCs = useAppStore((s) => s.userGCs)
+  const activeVCGcId = useAppStore((s) => s.activeVCGcId)
 
   const { theme, setTheme } = useTheme()
   const isMobile = useIsMobile()
@@ -642,6 +644,13 @@ export default function AppPage() {
 
       {/* ── DM Call UI (overlays) ──────────────────────────────────────── */}
       <DMCallUI />
+
+      {/* ── Persistent Voice Channel: stays alive across navigation ────── */}
+      {/* When the user is in VC for a GC but viewing a different GC or DM, */}
+      {/* show a compact floating indicator instead of the full banner.    */}
+      {activeVCGcId && activeVCGcId !== selectedGCId && (
+        <VoiceChannel gcId={activeVCGcId} showFull={false} />
+      )}
 
       {selectedGCId && (
         <>
