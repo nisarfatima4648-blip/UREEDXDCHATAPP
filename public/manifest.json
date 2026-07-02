@@ -1,10 +1,48 @@
 {
-  "name": "UREEDXDCHAT",
-  "short_name": "UREEDXDCHAT",
-  "description": "Real-time group messaging platform",
+  "name": "UREEDXD — Voice & Text Chat",
+  "short_name": "UREEDXD",
+  "description": "Real-time group messaging and voice chat platform",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
+  "orientation": "portrait",
   "background_color": "#313338",
   "theme_color": "#23a559",
-  "icons": []
+  "categories": ["social", "communication", "productivity"],
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Open Direct Messages",
+      "short_name": "DMs",
+      "url": "/?view=dms",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Create Group",
+      "short_name": "New Group",
+      "url": "/?action=create-gc",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    }
+  ],
+  "screenshots": [],
+  "display_override": ["standalone", "minimal-ui"]
 }

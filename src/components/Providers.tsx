@@ -2,6 +2,7 @@
 
 import { ThemeProvider as NextThemesProvider } from 'next-themes'
 import ThemeInitializer from './ThemeInitializer'
+import { InstallPrompt } from './InstallPrompt'
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return (
@@ -12,6 +13,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
     >
       <ThemeInitializer />
       {children}
+      <InstallPrompt />
     </NextThemesProvider>
   )
 }
